@@ -1,7 +1,7 @@
 # RDE (Resistance DEcade)
 Resistance DEcade with SCPI, UART, USB, RS485 and ETHERNET in 3U eurocard format
 
-![Resistance DEcade board](RDE_board_HARD\Media\RDE_board_angle.png)
+![Resistance DEcade board](RDE_board_HARD/Media/RDE_board_angle.png)
 
 ---
 ## Status : WIP
