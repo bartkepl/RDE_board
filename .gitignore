@@ -28,7 +28,7 @@ fp-info-cache
 
 # Exported BOM files
 *.xml
-
+RDE_board_HARD/PCB/ibom.config.ini
 
 # STM32CubeIDE specific files
 

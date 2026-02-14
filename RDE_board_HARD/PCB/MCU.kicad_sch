@@ -3612,16 +3612,6 @@
 	)
 	(wire
 		(pts
-			(xy 259.08 138.43) (xy 259.08 134.62)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "4e6b91e6-f468-4014-9675-3163e512e891")
-	)
-	(wire
-		(pts
 			(xy 123.19 113.03) (xy 101.6 113.03)
 		)
 		(stroke
@@ -3922,7 +3912,7 @@
 	)
 	(wire
 		(pts
-			(xy 250.19 135.89) (xy 265.43 135.89)
+			(xy 250.19 135.89) (xy 267.97 135.89)
 		)
 		(stroke
 			(width 0)
@@ -4079,16 +4069,6 @@
 			(type default)
 		)
 		(uuid "ac388aaa-9492-4bf0-b0f0-4e8e8e6e674b")
-	)
-	(wire
-		(pts
-			(xy 259.08 138.43) (xy 265.43 138.43)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "ad71cfd8-6879-400d-a52d-0a1c1546c761")
 	)
 	(wire
 		(pts
@@ -4279,6 +4259,16 @@
 			(type default)
 		)
 		(uuid "c8c3eae3-2760-484f-b5c6-6de58c4a373d")
+	)
+	(wire
+		(pts
+			(xy 259.08 134.62) (xy 259.08 138.43)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "cc0e831f-8b9a-4b9b-8390-ef37d469d29f")
 	)
 	(wire
 		(pts
@@ -4532,6 +4522,16 @@
 	)
 	(wire
 		(pts
+			(xy 259.08 138.43) (xy 267.97 138.43)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "f731f42b-3d8b-4f11-96fe-38680a5bfe6b")
+	)
+	(wire
+		(pts
 			(xy 118.11 95.25) (xy 123.19 95.25)
 		)
 		(stroke
@@ -4581,7 +4581,7 @@
 		(uuid "11fdef06-4333-4b1a-90d1-ab09e7af13d4")
 	)
 	(label "SDA"
-		(at 265.43 135.89 0)
+		(at 260.35 135.89 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -4591,7 +4591,7 @@
 		(uuid "1672a595-9b96-498a-b91f-66f200f63a22")
 	)
 	(label "SCL"
-		(at 265.43 138.43 0)
+		(at 260.35 138.43 0)
 		(effects
 			(font
 				(size 1.27 1.27)
@@ -4742,6 +4742,28 @@
 			(justify right)
 		)
 		(uuid "3cf5c236-f098-436c-843e-9248efd82c87")
+	)
+	(hierarchical_label "SDA"
+		(shape input)
+		(at 267.97 135.89 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "42d69fbc-39b5-4c3b-b614-e39155dbb1d4")
+	)
+	(hierarchical_label "SCL"
+		(shape input)
+		(at 267.97 138.43 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "42d69fbc-39b5-4c3b-b614-e39155dbb1d5")
 	)
 	(hierarchical_label "USART2_TX"
 		(shape input)
