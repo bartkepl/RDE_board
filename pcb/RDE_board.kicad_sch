@@ -6,8 +6,8 @@
 	(paper "A4")
 	(title_block
 		(title "ResistorDEcade_board")
-		(date "2026-02-18")
-		(rev "0.2")
+		(date "2026-02-21")
+		(rev "0.3")
 	)
 	(lib_symbols
 		(symbol "Connector:TestPoint"
