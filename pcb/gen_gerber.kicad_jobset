@@ -102,7 +102,7 @@
       "id": "40ff72e7-81d9-4e3d-81aa-8494ee7d9619",
       "only": [],
       "settings": {
-        "output_path": "..\\media\\"
+        "output_path": "..\\prod\\"
       },
       "type": "folder"
     }
