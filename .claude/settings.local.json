@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"e:\\\\PROJEKTY\\\\\" -Directory -ErrorAction SilentlyContinue | Select-Object Name, FullName)",
+      "Bash(ls -d \"e:/PROJEKTY\"/*/ 2>/dev/null | head -20)",
+      "Read(//e/PROJEKTY/**)"
+    ]
+  }
+}

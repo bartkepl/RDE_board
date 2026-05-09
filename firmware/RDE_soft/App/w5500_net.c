@@ -1,0 +1,341 @@
+/*
+ * w5500_net.c – W5500 Ethernet non-blocking state machine for RDE_board
+ *
+ * SPI2 = W5500 at 12.5 Mbps, Mode 0, software CS on PB12.
+ * MCO1 (PA8) outputs SYSCLK/2 = 25 MHz as W5500_CLK (set in SystemClock_Config).
+ *
+ * w5500_net_init() – registers SPI callbacks, starts async reset sequence
+ * w5500_net_task() – call every main-loop iteration; drives state machine
+ *
+ * State flow:
+ *   RESET_ASSERT → (10 ms) → RESET_DEASSERT → (50 ms) → CHECK_CHIP
+ *   CHECK_CHIP: VERSIONR==0x04 → CHIP_INIT : ERROR (retry 2 s)
+ *   CHIP_INIT → WAIT_LINK → (link ON) → DHCP_START → DHCP_RUN
+ *   DHCP_RUN → (acquired or 5 s) → APPLY_IP → OPEN_SOCKETS → RUNNING
+ *   RUNNING → (link lost) → LINK_DOWN → (link ON) → DHCP_START
+ */
+
+#include "w5500_net.h"
+#include "main.h"
+#include "utils/utils.h"
+#include "vxi11/vxi11_server.h"
+#include "wizchip_conf.h"
+#include "socket.h"
+#include "dhcp.h"
+#include "stm32g4xx_hal.h"
+#include <string.h>
+
+extern SPI_HandleTypeDef hspi2;
+
+/* ── SPI / chip-select callbacks ────────────────────────────────────────── */
+
+static void w5500_cs_select(void)       { HAL_GPIO_WritePin(W5500_CS_GPIO_Port, W5500_CS_Pin, GPIO_PIN_RESET); }
+static void w5500_cs_deselect(void)     { HAL_GPIO_WritePin(W5500_CS_GPIO_Port, W5500_CS_Pin, GPIO_PIN_SET);   }
+static void w5500_cris_enter(void)      { __disable_irq(); }
+static void w5500_cris_exit(void)       { __enable_irq();  }
+static uint8_t w5500_spi_read(void)    { uint8_t b = 0; HAL_SPI_Receive(&hspi2, &b, 1, 10); return b; }
+static void w5500_spi_write(uint8_t b) { HAL_SPI_Transmit(&hspi2, &b, 1, 10); }
+
+/* ── State machine ──────────────────────────────────────────────────────── */
+
+typedef enum {
+    W5500_ST_RESET_ASSERT = 0,  /* drive RST low */
+    W5500_ST_RESET_DEASSERT,    /* release RST after 10 ms */
+    W5500_ST_BOOT_WAIT,         /* wait 50 ms for W5500 internal boot */
+    W5500_ST_CHECK_CHIP,        /* read VERSIONR – must be 0x04 */
+    W5500_ST_CHIP_INIT,         /* wizchip_init + build MAC */
+    W5500_ST_WAIT_LINK,         /* poll PHY link, no timeout */
+    W5500_ST_LINK_SETTLE,       /* wait 1500 ms after link-up (STP convergence) */
+    W5500_ST_DHCP_START,        /* DHCP_init */
+    W5500_ST_DHCP_RUN,          /* DHCP_run per tick + 12 s timeout */
+    W5500_ST_APPLY_IP,          /* commit DHCP or static IP */
+    W5500_ST_OPEN_SOCKETS,      /* vxi11_server_init */
+    W5500_ST_RUNNING,           /* DHCP renewal + VXI-11 service */
+    W5500_ST_LINK_DOWN,         /* cable removed, wait for link */
+    W5500_ST_ERROR,             /* chip not responding, retry after 2 s */
+} w5500_state_t;
+
+static w5500_state_t state         = W5500_ST_RESET_ASSERT;
+static uint32_t      state_tick    = 0;
+static uint32_t      dhcp_tick_ms  = 0;
+static bool          dhcp_acquired = false;
+
+/* Debugger-visible: watch these in STM32CubeIDE Expressions view */
+volatile uint8_t w5500_dbg_versionr    = 0;     /* must be 0x04 */
+volatile int     w5500_dbg_state       = 0;     /* RUNNING = 11 */
+volatile bool    w5500_dbg_dhcp_ok     = false; /* true = DHCP ok, false = static */
+volatile uint8_t w5500_dbg_dhcp_result = 0xFF;  /* last DHCP_run() return code */
+volatile uint8_t w5500_dbg_sn_sr       = 0;     /* socket 0 status – must stay 0x22 (SOCK_UDP) during DHCP */
+volatile uint16_t w5500_dbg_rx_rsr     = 0;     /* socket 0 RX bytes available */
+
+/* ── DHCP ───────────────────────────────────────────────────────────────── */
+
+#define DHCP_SOCKET      0
+#define DHCP_TIMEOUT_MS  12000u
+
+static uint8_t dhcp_buf[548];
+static bool    dhcp_done = false;
+
+static void dhcp_ip_assigned(void) { dhcp_done = true; }
+static void dhcp_ip_conflict(void) { }
+
+/* ── Network configuration ──────────────────────────────────────────────── */
+
+static wiz_NetInfo net_info = {
+    .mac  = {0x02, 0x08, 0xDC, 0x00, 0x00, 0x00},
+    .ip   = RDE_STATIC_IP,
+    .sn   = RDE_SUBNET_MASK,
+    .gw   = RDE_GATEWAY,
+    .dns  = RDE_DNS_SERVER,
+    .dhcp = NETINFO_DHCP,
+};
+
+static void build_mac_from_uid(uint8_t mac[6])
+{
+    const char *s = serial_get_full();
+    mac[0] = 0x00;   /* WIZnet OUI (globally administered) – better DHCP compat */
+    mac[1] = 0x08;
+    mac[2] = 0xDC;
+    for (int i = 0; i < 3; i++) {
+        uint8_t hi = (s[i*2]   >= 'A') ? (uint8_t)(s[i*2]   - 'A' + 10) : (uint8_t)(s[i*2]   - '0');
+        uint8_t lo = (s[i*2+1] >= 'A') ? (uint8_t)(s[i*2+1] - 'A' + 10) : (uint8_t)(s[i*2+1] - '0');
+        mac[3+i] = (uint8_t)((hi << 4) | lo);
+    }
+}
+
+/* ── State machine helpers ──────────────────────────────────────────────── */
+
+static void enter_state(w5500_state_t s)
+{
+    state           = s;
+    state_tick      = HAL_GetTick();
+    w5500_dbg_state = (int)s;
+}
+
+static bool elapsed(uint32_t ms)
+{
+    return (HAL_GetTick() - state_tick) >= ms;
+}
+
+/* ── Public API ─────────────────────────────────────────────────────────── */
+
+void w5500_net_init(void)
+{
+    /* Register callbacks – no SPI activity, non-blocking */
+    reg_wizchip_cris_cbfunc(w5500_cris_enter, w5500_cris_exit);
+    reg_wizchip_cs_cbfunc(w5500_cs_select, w5500_cs_deselect);
+    reg_wizchip_spi_cbfunc(w5500_spi_read, w5500_spi_write);
+    w5500_cs_deselect();   /* ensure CS is idle-high */
+    enter_state(W5500_ST_RESET_ASSERT);
+}
+
+void w5500_net_task(void)
+{
+    switch (state) {
+
+    /* ── Hardware reset ── */
+    case W5500_ST_RESET_ASSERT:
+        HAL_GPIO_WritePin(W5500_RST_GPIO_Port, W5500_RST_Pin, GPIO_PIN_RESET);
+        enter_state(W5500_ST_RESET_DEASSERT);
+        break;
+
+    case W5500_ST_RESET_DEASSERT:
+        if (elapsed(10)) {
+            HAL_GPIO_WritePin(W5500_RST_GPIO_Port, W5500_RST_Pin, GPIO_PIN_SET);
+            enter_state(W5500_ST_BOOT_WAIT);
+        }
+        break;
+
+    case W5500_ST_BOOT_WAIT:
+        if (elapsed(50)) {
+            enter_state(W5500_ST_CHECK_CHIP);
+        }
+        break;
+
+    /* ── Chip verification – guards against SPI deadlock in socket() ── */
+    case W5500_ST_CHECK_CHIP:
+        w5500_dbg_versionr = getVERSIONR();   /* watch in debugger: must be 0x04 */
+        if (w5500_dbg_versionr == 0x04) {
+            enter_state(W5500_ST_CHIP_INIT);
+        } else {
+            enter_state(W5500_ST_ERROR);
+        }
+        break;
+
+    case W5500_ST_CHIP_INIT: {
+        uint8_t tx[8] = {2, 2, 2, 2, 2, 2, 2, 2};
+        uint8_t rx[8] = {2, 2, 2, 2, 2, 2, 2, 2};
+        wizchip_init(tx, rx);
+
+        /* PHY speed – controlled by W5500_PHY_MODE in w5500_net.h.
+         * PHYCFGR bits: [7]=RST [6]=OPMD [5]=DPX [4]=SPD
+         *   reset phase : RST=0, OPMD=1, desired SPD/DPX
+         *   run phase   : RST=1, OPMD=1, desired SPD/DPX */
+#if W5500_PHY_MODE == W5500_PHY_10M_HD
+        setPHYCFGR(0x40); HAL_Delay(2); setPHYCFGR(0xC0); HAL_Delay(100);
+#elif W5500_PHY_MODE == W5500_PHY_100M_FD
+        setPHYCFGR(0x70); HAL_Delay(2); setPHYCFGR(0xF0); HAL_Delay(100);
+#else /* W5500_PHY_AUTO – auto-negotiation via PMODE pins, no override needed */
+#endif
+
+        build_mac_from_uid(net_info.mac);
+        net_info.dhcp = NETINFO_DHCP;
+        wizchip_setnetinfo(&net_info);
+        enter_state(W5500_ST_WAIT_LINK);
+        break;
+    }
+
+    /* ── PHY link – no timeout, cable may be absent at power-up ── */
+    case W5500_ST_WAIT_LINK:
+        if (wizphy_getphylink() == PHY_LINK_ON) {
+            enter_state(W5500_ST_LINK_SETTLE);
+        }
+        break;
+
+    /* ── Link settle – wait for switch STP to converge before DHCP ── */
+    case W5500_ST_LINK_SETTLE:
+        if (!elapsed(1500)) {
+            /* keep polling – bail out if link drops during settle */
+            if (wizphy_getphylink() != PHY_LINK_ON) {
+                enter_state(W5500_ST_WAIT_LINK);
+            }
+        } else {
+            enter_state(W5500_ST_DHCP_START);
+        }
+        break;
+
+    /* ── DHCP acquisition ── */
+    case W5500_ST_DHCP_START: {
+        /* RFC 2131: DHCP DISCOVER must be sent from 0.0.0.0, not from our static IP.
+         * wizchip_setnetinfo() already set SIPR to the static fallback – clear it now. */
+        uint8_t zero[4] = {0, 0, 0, 0};
+        setSIPR(zero);
+        dhcp_done    = false;
+        dhcp_tick_ms = HAL_GetTick();
+        DHCP_init(DHCP_SOCKET, dhcp_buf);
+        reg_dhcp_cbfunc(dhcp_ip_assigned, dhcp_ip_assigned, dhcp_ip_conflict);
+        enter_state(W5500_ST_DHCP_RUN);
+        break;
+    }
+
+    case W5500_ST_DHCP_RUN: {
+        /* Rate-limit DHCP_run() to once every 50 ms.
+         * Calling it every loop iteration causes thousands of getSn_SR() SPI reads
+         * per second.  A single bad read (SPI noise) triggers socket re-open which
+         * flushes the RX buffer and loses the DHCP OFFER. */
+        static uint32_t dhcp_run_ms = 0;
+        uint32_t now = HAL_GetTick();
+
+        if (now - dhcp_tick_ms >= 1000u) {
+            dhcp_tick_ms = now;
+            DHCP_time_handler();
+        }
+        if (!dhcp_done && (now - dhcp_run_ms >= 50u)) {
+            dhcp_run_ms = now;
+            w5500_dbg_sn_sr   = getSn_SR(DHCP_SOCKET);    /* should stay 0x22=SOCK_UDP */
+            w5500_dbg_rx_rsr  = getSn_RX_RSR(DHCP_SOCKET); /* >0 means OFFER arrived */
+            w5500_dbg_dhcp_result = DHCP_run();   /* 0=FAIL 1=RUNNING 2=ASSIGN */
+        }
+        if (dhcp_done || elapsed(DHCP_TIMEOUT_MS)) {
+            enter_state(W5500_ST_APPLY_IP);
+        }
+        break;
+    }
+
+    case W5500_ST_APPLY_IP:
+        if (dhcp_done) {
+            getIPfromDHCP(net_info.ip);
+            getSNfromDHCP(net_info.sn);
+            getGWfromDHCP(net_info.gw);
+            net_info.dhcp = NETINFO_DHCP;
+        } else {
+            /* Static fallback */
+            uint8_t ip[] = RDE_STATIC_IP;
+            uint8_t sn[] = RDE_SUBNET_MASK;
+            uint8_t gw[] = RDE_GATEWAY;
+            memcpy(net_info.ip, ip, 4);
+            memcpy(net_info.sn, sn, 4);
+            memcpy(net_info.gw, gw, 4);
+            net_info.dhcp = NETINFO_STATIC;
+            close(DHCP_SOCKET);   /* release DHCP socket */
+        }
+        wizchip_setnetinfo(&net_info);
+        dhcp_acquired       = dhcp_done;
+        w5500_dbg_dhcp_ok   = dhcp_done;   /* watch in debugger */
+        enter_state(W5500_ST_OPEN_SOCKETS);
+        break;
+
+    case W5500_ST_OPEN_SOCKETS:
+        vxi11_server_init();
+        dhcp_tick_ms = HAL_GetTick();
+        enter_state(W5500_ST_RUNNING);
+        break;
+
+    /* ── Normal operation ── */
+    case W5500_ST_RUNNING: {
+        /* DHCP renewal (only when DHCP was acquired) */
+        if (dhcp_acquired) {
+            uint32_t now = HAL_GetTick();
+            if (now - dhcp_tick_ms >= 1000u) {
+                dhcp_tick_ms = now;
+                DHCP_time_handler();
+            }
+            uint8_t res = DHCP_run();
+            if (res == DHCP_IP_ASSIGN || res == DHCP_IP_CHANGED) {
+                getIPfromDHCP(net_info.ip);
+                getSNfromDHCP(net_info.sn);
+                getGWfromDHCP(net_info.gw);
+                wizchip_setnetinfo(&net_info);
+            }
+        }
+
+        /* Link check every 500 ms, 3 consecutive failures required (1.5 s).
+         * Prevents false link-down from SPI noise resetting SIPR to 0.0.0.0. */
+        static uint32_t link_chk_ms = 0;
+        static uint8_t  link_miss   = 0;
+        if (HAL_GetTick() - link_chk_ms >= 500u) {
+            link_chk_ms = HAL_GetTick();
+            if (wizphy_getphylink() != PHY_LINK_ON) {
+                if (++link_miss >= 3) {
+                    link_miss = 0;
+                    vxi11_server_close();
+                    enter_state(W5500_ST_LINK_DOWN);
+                    break;
+                }
+            } else {
+                link_miss = 0;
+            }
+        }
+
+        vxi11_server_task();
+        break;
+    }
+
+    /* ── Link-loss recovery – LINK_SETTLE before DHCP for STP convergence ── */
+    case W5500_ST_LINK_DOWN:
+        if (wizphy_getphylink() == PHY_LINK_ON) {
+            enter_state(W5500_ST_LINK_SETTLE);
+        }
+        break;
+
+    /* ── Chip not responding – retry after 2 s ── */
+    case W5500_ST_ERROR:
+        if (elapsed(2000u)) {
+            enter_state(W5500_ST_RESET_ASSERT);
+        }
+        break;
+
+    default:
+        break;
+    }
+}
+
+bool w5500_net_is_linked(void)
+{
+    return (state == W5500_ST_RUNNING);
+}
+
+void w5500_net_get_ip(uint8_t ip[4])
+{
+    memcpy(ip, net_info.ip, 4);
+}
