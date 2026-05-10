@@ -25,6 +25,8 @@
 #include "scpi_def.h"
 #include "usbtmc_app.h"
 #include "relay/relay_ctrl.h"
+#include "relay/relay_cal.h"
+#include "fram/fm24c64b.h"
 #include "net_config.h"
 #include "w5500_net.h"
 /* USER CODE END Includes */
@@ -45,6 +47,8 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+CRC_HandleTypeDef hcrc;
+
 I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
@@ -68,6 +72,7 @@ static void MX_SPI2_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USB_PCD_Init(void);
+static void MX_CRC_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -112,6 +117,7 @@ int main(void)
   MX_USART1_UART_Init();
   MX_USART2_UART_Init();
   MX_USB_PCD_Init();
+  MX_CRC_Init();
   /* USER CODE BEGIN 2 */
 
   /* CRS: trim HSI48 via USB SOF – required for USB ±500 ppm clock accuracy */
@@ -127,7 +133,15 @@ int main(void)
 
   HAL_GPIO_WritePin(REL_EN_GPIO_Port, REL_EN_Pin, GPIO_PIN_RESET); /* relay PSU off – activate via relay_enable(true) */
   relay_init();
-  net_config_init();   /* load network config from flash before w5500_net_init */
+
+  /* FRAM – signal error with red LED if not reachable */
+  if (!fm24_ping()) {
+      HAL_GPIO_WritePin(LED_R_GPIO_Port, LED_R_Pin, GPIO_PIN_SET);
+  }
+
+  net_config_init();   /* load network config from FRAM (or flash fallback) before w5500_net_init */
+  relay_cal_init();    /* load decade calibration from FRAM */
+
   tud_init(BOARD_TUD_RHPORT);
   tud_disconnect();   /* self-powered: do not pull D+ until VUSB detected */
   SCPI_Main_Init();
@@ -219,6 +233,37 @@ void SystemClock_Config(void)
     Error_Handler();
   }
   HAL_RCC_MCOConfig(RCC_MCO1, RCC_MCO1SOURCE_SYSCLK, RCC_MCODIV_2);
+}
+
+/**
+  * @brief CRC Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_CRC_Init(void)
+{
+
+  /* USER CODE BEGIN CRC_Init 0 */
+
+  /* USER CODE END CRC_Init 0 */
+
+  /* USER CODE BEGIN CRC_Init 1 */
+
+  /* USER CODE END CRC_Init 1 */
+  hcrc.Instance = CRC;
+  hcrc.Init.DefaultPolynomialUse = DEFAULT_POLYNOMIAL_ENABLE;
+  hcrc.Init.DefaultInitValueUse = DEFAULT_INIT_VALUE_ENABLE;
+  hcrc.Init.InputDataInversionMode = CRC_INPUTDATA_INVERSION_NONE;
+  hcrc.Init.OutputDataInversionMode = CRC_OUTPUTDATA_INVERSION_DISABLE;
+  hcrc.InputDataFormat = CRC_INPUTDATA_FORMAT_BYTES;
+  if (HAL_CRC_Init(&hcrc) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN CRC_Init 2 */
+
+  /* USER CODE END CRC_Init 2 */
+
 }
 
 /**

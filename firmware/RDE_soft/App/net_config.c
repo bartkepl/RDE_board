@@ -1,6 +1,16 @@
 /*
  * net_config.c – persistent network configuration stored in STM32G4 flash
  *
+ * *** SWITCHING BACKENDS ***
+ * Two storage backends are available:
+ *   net_config.c      (this file)  – stores config in STM32G4 flash, page 63
+ *   net_config_fram.c              – stores config in FM24C64B FRAM via I2C
+ *
+ * Both expose the same public API (net_config_init / net_config_save / net_config_get).
+ * To switch: in CubeIDE, right-click the file you want to DISABLE →
+ *   Resource Configurations → Exclude from Build → check Debug + Release → OK.
+ * Only ONE of the two files must be active at a time (otherwise: linker duplicate symbol).
+ *
  * Last page of 128 KB flash (page 63) is reserved for config.
  * Page start: 0x0801F800, page size: 2 KB.
  *

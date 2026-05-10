@@ -5,6 +5,7 @@
 #include "scpi_def.h"
 #include "stm32g4xx_hal.h"
 #include "relay/relay_ctrl.h"
+#include "relay/relay_cal.h"
 #include "net_config.h"
 #include "w5500_net.h"
 #include "utils/utils.h"
@@ -50,6 +51,13 @@ static scpi_result_t SCPI_NetStateQ(scpi_t *context);
 static scpi_result_t SCPI_SystemBootloaderEnter(scpi_t *context);
 static scpi_result_t SCPI_SystemReset(scpi_t *context);
 static scpi_result_t SCPI_SystemIdQ(scpi_t *context);
+static scpi_result_t SCPI_CalDecadeSet(scpi_t *context);
+static scpi_result_t SCPI_CalDecadeQ(scpi_t *context);
+static scpi_result_t SCPI_CalSave(scpi_t *context);
+static scpi_result_t SCPI_CalLoad(scpi_t *context);
+static scpi_result_t SCPI_CalReset(scpi_t *context);
+static scpi_result_t SCPI_CalEnableSet(scpi_t *context);
+static scpi_result_t SCPI_CalEnableQ(scpi_t *context);
 
 /* ===== Command list ===== */
 static const scpi_command_t scpi_commands[] = {
@@ -109,6 +117,15 @@ static const scpi_command_t scpi_commands[] = {
     { .pattern = "NET:DHCP?",      .callback = SCPI_NetDhcpQ,   },
     { .pattern = "NET:APPLy",      .callback = SCPI_NetApply,   },
     { .pattern = "NET:STATe?",     .callback = SCPI_NetStateQ,  },
+
+    /* Decade calibration */
+    { .pattern = "CALibration:DECade",   .callback = SCPI_CalDecadeSet,   },
+    { .pattern = "CALibration:DECade?",  .callback = SCPI_CalDecadeQ,     },
+    { .pattern = "CALibration:SAVE",     .callback = SCPI_CalSave,        },
+    { .pattern = "CALibration:LOAD",     .callback = SCPI_CalLoad,        },
+    { .pattern = "CALibration:RESet",    .callback = SCPI_CalReset,       },
+    { .pattern = "CALibration:ENable",   .callback = SCPI_CalEnableSet,   },
+    { .pattern = "CALibration:ENable?",  .callback = SCPI_CalEnableQ,     },
 
     SCPI_CMD_LIST_END
 };
@@ -209,10 +226,18 @@ static scpi_result_t SCPI_ResistanceValueSet(scpi_t *context)
     return SCPI_RES_OK;
 }
 
-/* RESistance:VALue?  –  returns current resistance in ohms */
+/* RESistance:VALue?  –  returns resistance in ohms; if calibration enabled,
+ * returns calibrated total as "XXXXXX.XXX" (3 decimal places from milliohms) */
 static scpi_result_t SCPI_ResistanceValueQ(scpi_t *context)
 {
-    SCPI_ResultUInt32(context, relay_get_resistance());
+    if (relay_cal_is_enabled()) {
+        uint32_t mo = relay_cal_total_milliohm();
+        char buf[16];
+        snprintf(buf, sizeof(buf), "%lu.%03lu", (unsigned long)(mo / 1000u), (unsigned long)(mo % 1000u));
+        SCPI_ResultCharacters(context, buf, strlen(buf));
+    } else {
+        SCPI_ResultUInt32(context, relay_get_resistance());
+    }
     return SCPI_RES_OK;
 }
 
@@ -536,5 +561,75 @@ static scpi_result_t SCPI_SystemIdQ(scpi_t *context)
     else
         SCPI_ResultCharacters(context, serial_get(), 8);
 
+    return SCPI_RES_OK;
+}
+
+/* ===== Calibration command handlers ===== */
+
+/* CALibration:DECade <1-6>,<0-9>,<milliohm>
+ * Store measured milliohm value for the given decade and digit. */
+static scpi_result_t SCPI_CalDecadeSet(scpi_t *context)
+{
+    uint32_t decade, digit, milliohm;
+    if (!SCPI_ParamUInt32(context, &decade,   TRUE)) SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    if (!SCPI_ParamUInt32(context, &digit,    TRUE)) SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    if (!SCPI_ParamUInt32(context, &milliohm, TRUE)) SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    if (decade < 1 || decade > 6 || digit > 9)
+        SCPI_PUSH_ERR(context, SCPI_ERROR_DATA_OUT_OF_RANGE);
+    relay_cal_set((uint8_t)decade, (uint8_t)digit, milliohm);
+    return SCPI_RES_OK;
+}
+
+/* CALibration:DECade? <1-6>,<0-9>
+ * Return stored milliohm value for decade/digit. */
+static scpi_result_t SCPI_CalDecadeQ(scpi_t *context)
+{
+    uint32_t decade, digit;
+    if (!SCPI_ParamUInt32(context, &decade, TRUE)) SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    if (!SCPI_ParamUInt32(context, &digit,  TRUE)) SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    if (decade < 1 || decade > 6 || digit > 9)
+        SCPI_PUSH_ERR(context, SCPI_ERROR_DATA_OUT_OF_RANGE);
+    SCPI_ResultUInt32(context, relay_cal_get((uint8_t)decade, (uint8_t)digit));
+    return SCPI_RES_OK;
+}
+
+/* CALibration:SAVE  –  write current calibration data to FRAM */
+static scpi_result_t SCPI_CalSave(scpi_t *context)
+{
+    (void)context;
+    relay_cal_save();
+    return SCPI_RES_OK;
+}
+
+/* CALibration:LOAD  –  re-read calibration data from FRAM */
+static scpi_result_t SCPI_CalLoad(scpi_t *context)
+{
+    (void)context;
+    relay_cal_init();
+    return SCPI_RES_OK;
+}
+
+/* CALibration:RESet  –  restore nominal values in RAM (does NOT write to FRAM) */
+static scpi_result_t SCPI_CalReset(scpi_t *context)
+{
+    (void)context;
+    relay_cal_reset();
+    return SCPI_RES_OK;
+}
+
+/* CALibration:ENable ON|OFF|1|0 */
+static scpi_result_t SCPI_CalEnableSet(scpi_t *context)
+{
+    bool en = false;
+    if (!SCPI_ParamBool(context, &en, TRUE))
+        SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    relay_cal_enable(en);
+    return SCPI_RES_OK;
+}
+
+/* CALibration:ENable?  –  returns 1 or 0 */
+static scpi_result_t SCPI_CalEnableQ(scpi_t *context)
+{
+    SCPI_ResultBool(context, relay_cal_is_enabled());
     return SCPI_RES_OK;
 }

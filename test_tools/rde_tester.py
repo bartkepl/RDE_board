@@ -227,9 +227,74 @@ class RdeTester:
                   text="  NOTE: Set fields → NET:APPLy restarts Ethernet stack (reconnect needed)",
                   foreground="gray").pack(side="left", padx=6)
 
-        # ── Row 5: Quick Commands ──
+        # ── Row 5: Calibration ──
+        cal_frame = ttk.LabelFrame(self.root, text="Calibration  (CALibration:*)")
+        cal_frame.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
+
+        # Row 0: point selector + set/query
+        ttk.Label(cal_frame, text="Decade:").grid(row=0, column=0, **pad)
+        self.cal_decade_var = tk.StringVar(value="1")
+        ttk.Spinbox(cal_frame, from_=1, to=6, textvariable=self.cal_decade_var,
+                    width=4, justify="center").grid(row=0, column=1, **pad)
+
+        ttk.Label(cal_frame, text="Digit:").grid(row=0, column=2, **pad)
+        self.cal_digit_var = tk.StringVar(value="1")
+        ttk.Spinbox(cal_frame, from_=0, to=9, textvariable=self.cal_digit_var,
+                    width=4, justify="center").grid(row=0, column=3, **pad)
+
+        ttk.Label(cal_frame, text="Milliohm:").grid(row=0, column=4, **pad)
+        self.cal_milli_var = tk.StringVar(value="1000")
+        ttk.Entry(cal_frame, textvariable=self.cal_milli_var, width=10).grid(row=0, column=5, **pad)
+
+        ttk.Button(cal_frame, text="Set Point",   command=self._cal_set).grid(row=0, column=6, **pad)
+        ttk.Button(cal_frame, text="Query Point", command=self._cal_query).grid(row=0, column=7, **pad)
+
+        # Row 1: global actions
+        btn_cal = ttk.Frame(cal_frame)
+        btn_cal.grid(row=1, column=0, columnspan=8, sticky="w", padx=4, pady=2)
+        ttk.Button(btn_cal, text="Save to FRAM",      command=self._cal_save).pack(side="left", padx=2)
+        ttk.Button(btn_cal, text="Load from FRAM",    command=self._cal_load).pack(side="left", padx=2)
+        ttk.Button(btn_cal, text="Reset to nominal",  command=self._cal_reset).pack(side="left", padx=2)
+
+        ttk.Label(btn_cal, text="  Enable correction:").pack(side="left", padx=(10, 2))
+        self.cal_en_var = tk.StringVar(value="OFF")
+        ttk.Combobox(btn_cal, textvariable=self.cal_en_var, values=["ON", "OFF"],
+                     state="readonly", width=5).pack(side="left", padx=2)
+        ttk.Button(btn_cal, text="Set",   command=self._cal_enable_set).pack(side="left", padx=2)
+        ttk.Button(btn_cal, text="Query", command=self._cal_enable_query).pack(side="left", padx=2)
+
+        # Row 2: query all → populate treeview
+        ttk.Button(cal_frame, text="Query All → Table",
+                   command=self._cal_query_all).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=2)
+        ttk.Label(cal_frame,
+                  text="Values in milliohms. Digit 0 is always 0 mΩ (short).",
+                  foreground="gray").grid(row=2, column=2, columnspan=6, sticky="w", padx=4)
+
+        # Calibration treeview
+        cal_tv_frame = ttk.Frame(cal_frame)
+        cal_tv_frame.grid(row=3, column=0, columnspan=8, sticky="ew", padx=4, pady=(0, 4))
+
+        decade_names = ["1 (1Ω)", "2 (10Ω)", "3 (100Ω)", "4 (1kΩ)", "5 (10kΩ)", "6 (100kΩ)"]
+        digit_cols   = [str(d) for d in range(10)]
+        self.cal_tv = ttk.Treeview(cal_tv_frame,
+                                   columns=digit_cols,
+                                   show="headings",
+                                   height=6)
+        for col in digit_cols:
+            self.cal_tv.heading(col, text=f"d={col}")
+            self.cal_tv.column(col, width=80, anchor="center")
+        for row_idx, name in enumerate(decade_names):
+            nominal = [str(int(d) * (10 ** row_idx) * 1000) for d in range(10)]
+            self.cal_tv.insert("", "end", iid=str(row_idx), values=nominal, tags=(name,))
+        self.cal_tv.pack(side="left", fill="x", expand=True)
+
+        cal_vsb = ttk.Scrollbar(cal_tv_frame, orient="vertical", command=self.cal_tv.yview)
+        self.cal_tv.configure(yscrollcommand=cal_vsb.set)
+        cal_vsb.pack(side="right", fill="y")
+
+        # ── Row 6: Quick Commands ──
         qcmd_frame = ttk.LabelFrame(self.root, text="Quick Commands")
-        qcmd_frame.grid(row=5, column=0, columnspan=2, sticky="ew", **pad)
+        qcmd_frame.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
 
         quick_cmds = [
             ("*IDN?",               "*IDN?"),
@@ -257,6 +322,12 @@ class RdeTester:
             ("RSTAT 1,0,ON",        "RELay:STATe 1,0,ON"),
             ("RSTAT 1,0,OFF",       "RELay:STATe 1,0,OFF"),
             ("NET:STATe?",          "NET:STATe?"),
+            ("CAL:ENable ON",       "CALibration:ENable ON"),
+            ("CAL:ENable OFF",      "CALibration:ENable OFF"),
+            ("CAL:ENable?",         "CALibration:ENable?"),
+            ("CAL:SAVE",            "CALibration:SAVE"),
+            ("CAL:LOAD",            "CALibration:LOAD"),
+            ("CAL:RESet",           "CALibration:RESet"),
         ]
         cols = 4
         for idx, (label, cmd) in enumerate(quick_cmds):
@@ -268,9 +339,9 @@ class RdeTester:
                 ttk.Button(qcmd_frame, text=label, width=22,
                            command=lambda c=cmd: self._send(c)).grid(row=r, column=c, **pad)
 
-        # ── Row 6: Manual Command ──
+        # ── Row 7: Manual Command ──
         man_frame = ttk.LabelFrame(self.root, text="Manual Command")
-        man_frame.grid(row=6, column=0, columnspan=2, sticky="ew", **pad)
+        man_frame.grid(row=7, column=0, columnspan=2, sticky="ew", **pad)
 
         self.cmd_var = tk.StringVar()
         cmd_entry = ttk.Entry(man_frame, textvariable=self.cmd_var, width=60)
@@ -279,10 +350,10 @@ class RdeTester:
         ttk.Button(man_frame, text="Send →", command=lambda: self._send(self.cmd_var.get())).grid(
             row=0, column=1, **pad)
 
-        # ── Row 7: Response Log ──
+        # ── Row 8: Response Log ──
         log_frame = ttk.LabelFrame(self.root, text="Response Log")
-        log_frame.grid(row=7, column=0, columnspan=2, sticky="nsew", **pad)
-        self.root.rowconfigure(7, weight=1)
+        log_frame.grid(row=8, column=0, columnspan=2, sticky="nsew", **pad)
+        self.root.rowconfigure(8, weight=1)
         self.root.columnconfigure(0, weight=1)
 
         self.log = scrolledtext.ScrolledText(log_frame, height=14, wrap=tk.WORD,
@@ -580,6 +651,71 @@ class RdeTester:
             if resp:
                 self.root.after(0, lambda: self.net_state_var.set(resp))
         threading.Thread(target=_do, daemon=True).start()
+
+    # ─── Calibration ──────────────────────────────────────────────────────────
+
+    def _cal_set(self):
+        decade  = self.cal_decade_var.get().strip()
+        digit   = self.cal_digit_var.get().strip()
+        milliohm = self.cal_milli_var.get().strip()
+        try:
+            int(milliohm)
+        except ValueError:
+            self._log("Calibration ERROR: milliohm value must be an integer")
+            return
+        self._send(f"CALibration:DECade {decade},{digit},{milliohm}")
+
+    def _cal_query(self):
+        decade = self.cal_decade_var.get().strip()
+        digit  = self.cal_digit_var.get().strip()
+        def _do():
+            resp = self._send_and_get(f"CALibration:DECade? {decade},{digit}")
+            if resp is not None:
+                self.root.after(0, lambda: self.cal_milli_var.set(resp))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _cal_save(self):
+        self._send("CALibration:SAVE")
+
+    def _cal_load(self):
+        def _do():
+            self._send_and_get("CALibration:LOAD")
+            self._cal_query_all_impl()
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _cal_reset(self):
+        if messagebox.askyesno("Reset calibration",
+                               "Reset in-RAM calibration to nominal values?\n"
+                               "(Does NOT overwrite FRAM — use Save to persist.)"):
+            self._send("CALibration:RESet")
+
+    def _cal_enable_set(self):
+        self._send(f"CALibration:ENable {self.cal_en_var.get()}")
+
+    def _cal_enable_query(self):
+        def _do():
+            resp = self._send_and_get("CALibration:ENable?")
+            if resp is not None:
+                val = "ON" if resp.strip() in ("1", "ON") else "OFF"
+                self.root.after(0, lambda: self.cal_en_var.set(val))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _cal_query_all(self):
+        threading.Thread(target=self._cal_query_all_impl, daemon=True).start()
+
+    def _cal_query_all_impl(self):
+        """Query all 60 calibration points and update the treeview (call from worker thread)."""
+        data = {}  # {(decade_idx, digit): milliohm_str}
+        for dec in range(1, 7):
+            for dig in range(10):
+                resp = self._send_and_get(f"CALibration:DECade? {dec},{dig}")
+                data[(dec - 1, dig)] = resp if resp else "?"
+
+        def _update():
+            for row_idx in range(6):
+                values = [data.get((row_idx, d), "?") for d in range(10)]
+                self.cal_tv.item(str(row_idx), values=values)
+        self.root.after(0, _update)
 
     # ─── Log ─────────────────────────────────────────────────────────────────
 
