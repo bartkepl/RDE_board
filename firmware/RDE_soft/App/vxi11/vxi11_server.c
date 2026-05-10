@@ -15,6 +15,7 @@
 #include "vxi11_server.h"
 #include "rpc.h"
 #include "scpi_def.h"
+#include "mdns/mdns.h"
 #include "stm32g4xx_hal.h"
 
 #include "socket.h"       /* WIZnet ioLibrary */
@@ -84,7 +85,9 @@ static void handle_pmap_call(uint8_t sock, const rpc_call_t *call, xdr_t *args,
         (void)port_hint;
 
         uint32_t result = 0;
-        if (prog == PROG_VXI11_CORE && vers == 1 && proto == 6 /* IPPROTO_TCP */)
+        /* Respond to TCP (6), UDP (17), or unspecified (0) queries for VXI-11 Core.
+         * NI-MAX VXI-11 broadcast discovery may use proto=17 or proto=0. */
+        if (prog == PROG_VXI11_CORE && (proto == 6 || proto == 17 || proto == 0))
             result = PORT_VXI11_CORE;
 
         xdr_write_u32(&out, result);
@@ -93,8 +96,9 @@ static void handle_pmap_call(uint8_t sock, const rpc_call_t *call, xdr_t *args,
         xdr_write_u32(&out, 0);
     }
 
+    /* UDP portmapper must NOT have TCP Record Mark in the reply */
     uint32_t rlen = rpc_build_reply(tx_buf, sizeof(tx_buf),
-                                     call->xid, payload, xdr_written(&out));
+                                     call->xid, payload, xdr_written(&out), !is_udp);
     if (rlen == 0) return;
 
     if (is_udp) {
@@ -233,7 +237,7 @@ static void handle_vxi11_call(uint8_t sock, const rpc_call_t *call, xdr_t *args)
     }
 
     uint32_t rlen = rpc_build_reply(tx_buf, sizeof(tx_buf),
-                                     call->xid, payload, xdr_written(&out));
+                                     call->xid, payload, xdr_written(&out), true);
     if (rlen > 0) send(sock, tx_buf, rlen);
 }
 
@@ -247,10 +251,16 @@ void vxi11_server_init(void)
     socket(SOCK_VXI11_TCP, Sn_MR_TCP, PORT_VXI11_CORE, 0);
     listen(SOCK_PMAP_TCP);
     listen(SOCK_VXI11_TCP);
+
+    /* Start mDNS after sockets are up and IP is assigned */
+    uint8_t ip[4];
+    getSIPR(ip);
+    mdns_init(ip);
 }
 
 void vxi11_server_close(void)
 {
+    mdns_close();
     close(SOCK_PMAP_TCP);
     close(SOCK_PMAP_UDP);
     close(SOCK_VXI11_TCP);
@@ -268,7 +278,7 @@ void vxi11_server_task(void)
             recv(SOCK_PMAP_TCP, rx_buf, (uint16_t)rx_len);
             rpc_call_t call;
             xdr_t args;
-            if (rpc_parse_call(rx_buf, (uint32_t)rx_len, &call, &args)) {
+            if (rpc_parse_call(rx_buf, (uint32_t)rx_len, &call, &args, true)) {
                 handle_pmap_call(SOCK_PMAP_TCP, &call, &args, NULL, 0, false);
             }
         }
@@ -289,7 +299,7 @@ void vxi11_server_task(void)
             recvfrom(SOCK_PMAP_UDP, rx_buf, (uint16_t)rx_len, peer_ip, &peer_port);
             rpc_call_t call;
             xdr_t args;
-            if (rpc_parse_call(rx_buf, (uint32_t)rx_len, &call, &args)) {
+            if (rpc_parse_call(rx_buf, (uint32_t)rx_len, &call, &args, false)) {
                 handle_pmap_call(SOCK_PMAP_UDP, &call, &args, peer_ip, peer_port, true);
             }
         }
@@ -297,6 +307,8 @@ void vxi11_server_task(void)
             socket(SOCK_PMAP_UDP, Sn_MR_UDP, PORT_PMAP, 0);
         }
     }
+
+    mdns_task();
 
     /* ─── VXI-11 Core TCP ─── */
     status = getSn_SR(SOCK_VXI11_TCP);
@@ -307,7 +319,7 @@ void vxi11_server_task(void)
             recv(SOCK_VXI11_TCP, rx_buf, (uint16_t)rx_len);
             rpc_call_t call;
             xdr_t args;
-            if (rpc_parse_call(rx_buf, (uint32_t)rx_len, &call, &args)) {
+            if (rpc_parse_call(rx_buf, (uint32_t)rx_len, &call, &args, true)) {
                 handle_vxi11_call(SOCK_VXI11_TCP, &call, &args);
             }
         }

@@ -46,15 +46,19 @@ typedef enum {
 } rpc_accept_stat_t;
 
 /* Parse incoming RPC CALL from buf[0..len-1].
- * Skips the 4-byte Record Mark.
+ * tcp_framing=true  → skip the 4-byte TCP Record Mark first (TCP sockets)
+ * tcp_framing=false → parse from byte 0, no Record Mark (UDP sockets)
  * Returns false if the message is not a valid CALL. */
-bool rpc_parse_call(const uint8_t *buf, uint32_t len, rpc_call_t *call, xdr_t *args);
+bool rpc_parse_call(const uint8_t *buf, uint32_t len, rpc_call_t *call, xdr_t *args,
+                    bool tcp_framing);
 
 /* Write RPC REPLY with SUCCESS into out_buf.
- * Prepends 4-byte Record Mark (last fragment, length = payload).
- * Returns total bytes written (including Record Mark). */
+ * tcp_framing=true  → prepend 4-byte TCP Record Mark (TCP sockets)
+ * tcp_framing=false → no Record Mark, write XID directly (UDP sockets)
+ * Returns total bytes written. */
 uint32_t rpc_build_reply(uint8_t *out_buf, uint32_t out_size,
-                         uint32_t xid, const uint8_t *payload, uint32_t payload_len);
+                         uint32_t xid, const uint8_t *payload, uint32_t payload_len,
+                         bool tcp_framing);
 
 /* Write RPC REPLY with error status */
 uint32_t rpc_build_error(uint8_t *out_buf, uint32_t out_size,

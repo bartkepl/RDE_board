@@ -89,27 +89,33 @@ uint32_t xdr_written(xdr_t *x) { return x->pos; }
 /* Auth flavor – AUTH_NULL */
 #define AUTH_NULL 0u
 
-bool rpc_parse_call(const uint8_t *buf, uint32_t len, rpc_call_t *call, xdr_t *args)
+bool rpc_parse_call(const uint8_t *buf, uint32_t len, rpc_call_t *call, xdr_t *args,
+                    bool tcp_framing)
 {
     if (len < 4) return false;
 
-    /* Skip TCP record mark (4 bytes) */
-    uint32_t mark = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
-                    ((uint32_t)buf[2] << 8)  |  (uint32_t)buf[3];
-    uint32_t frag_len = mark & 0x7FFFFFFFu;
-    bool last_frag    = (mark >> 31) != 0;
-    (void)last_frag;
-    if (frag_len + 4 > len) return false;
-
     xdr_t x;
-    xdr_init_read(&x, (uint8_t *)buf + 4, frag_len);
+    uint32_t payload_len;
+
+    if (tcp_framing) {
+        /* TCP: first 4 bytes are the Record Mark (fragment length + last-frag bit) */
+        uint32_t mark = ((uint32_t)buf[0] << 24) | ((uint32_t)buf[1] << 16) |
+                        ((uint32_t)buf[2] << 8)  |  (uint32_t)buf[3];
+        payload_len = mark & 0x7FFFFFFFu;
+        if (payload_len + 4 > len) return false;
+        xdr_init_read(&x, (uint8_t *)buf + 4, payload_len);
+    } else {
+        /* UDP: no Record Mark – XDR data starts at byte 0 */
+        payload_len = len;
+        xdr_init_read(&x, (uint8_t *)buf, len);
+    }
 
     uint32_t xid, msg_type, rpc_vers, cred_flavor, cred_len, verf_flavor, verf_len;
 
-    if (!xdr_read_u32(&x, &xid))       return false;
-    if (!xdr_read_u32(&x, &msg_type))  return false;
-    if (msg_type != RPC_CALL)           return false;
-    if (!xdr_read_u32(&x, &rpc_vers))  return false;  /* should be 2 */
+    if (!xdr_read_u32(&x, &xid))        return false;
+    if (!xdr_read_u32(&x, &msg_type))   return false;
+    if (msg_type != RPC_CALL)            return false;
+    if (!xdr_read_u32(&x, &rpc_vers))   return false;  /* should be 2 */
     if (!xdr_read_u32(&x, &call->prog)) return false;
     if (!xdr_read_u32(&x, &call->vers)) return false;
     if (!xdr_read_u32(&x, &call->proc)) return false;
@@ -124,23 +130,29 @@ bool rpc_parse_call(const uint8_t *buf, uint32_t len, rpc_call_t *call, xdr_t *a
 
     call->xid = xid;
 
-    /* args = rest of the buffer */
-    xdr_init_read(args, (uint8_t *)buf + 4 + x.pos, frag_len - x.pos);
+    /* args = remainder of the XDR buffer after the header */
+    uint32_t hdr_end = x.pos;
+    xdr_init_read(args, x.buf + hdr_end, payload_len - hdr_end);
     return true;
 }
 
 uint32_t rpc_build_reply(uint8_t *out_buf, uint32_t out_size,
-                         uint32_t xid, const uint8_t *payload, uint32_t payload_len)
+                         uint32_t xid, const uint8_t *payload, uint32_t payload_len,
+                         bool tcp_framing)
 {
-    /* Header: xid(4) + REPLY(4) + ACCEPTED(4) + verf(8) + SUCCESS(4) = 24 bytes */
-    uint32_t total = 24 + payload_len;
-    if (total + 4 > out_size) return 0;
+    /* Body: xid(4) + REPLY(4) + ACCEPTED(4) + verf(8) + SUCCESS(4) = 24 bytes */
+    uint32_t body = 24 + payload_len;
+    /* TCP needs 4-byte Record Mark prefix */
+    uint32_t total = tcp_framing ? (4 + body) : body;
+    if (total > out_size) return 0;
 
     xdr_t x;
     xdr_init_write(&x, out_buf, out_size);
 
-    /* Record Mark: last fragment */
-    xdr_write_u32(&x, 0x80000000u | total);
+    if (tcp_framing) {
+        /* Record Mark: last-fragment bit + body length */
+        xdr_write_u32(&x, 0x80000000u | body);
+    }
 
     xdr_write_u32(&x, xid);
     xdr_write_u32(&x, RPC_REPLY);

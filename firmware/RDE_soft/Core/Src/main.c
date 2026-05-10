@@ -25,6 +25,7 @@
 #include "scpi_def.h"
 #include "usbtmc_app.h"
 #include "relay/relay_ctrl.h"
+#include "net_config.h"
 #include "w5500_net.h"
 /* USER CODE END Includes */
 
@@ -126,6 +127,7 @@ int main(void)
 
   HAL_GPIO_WritePin(REL_EN_GPIO_Port, REL_EN_Pin, GPIO_PIN_RESET); /* relay PSU off – activate via relay_enable(true) */
   relay_init();
+  net_config_init();   /* load network config from flash before w5500_net_init */
   tud_init(BOARD_TUD_RHPORT);
   tud_disconnect();   /* self-powered: do not pull D+ until VUSB detected */
   SCPI_Main_Init();
@@ -290,7 +292,7 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi1.Init.NSS = SPI_NSS_SOFT;
-  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;

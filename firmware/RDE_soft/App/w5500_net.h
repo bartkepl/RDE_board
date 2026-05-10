@@ -6,6 +6,7 @@
  *   Socket 1 – VXI-11 portmapper TCP (port 111)
  *   Socket 2 – VXI-11 portmapper UDP (port 111)
  *   Socket 3 – VXI-11 Core TCP (port 703)
+ *   Socket 4 – mDNS (UDP multicast 224.0.0.251:5353)
  */
 
 #ifndef APP_W5500_NET_H_
@@ -13,12 +14,6 @@
 
 #include <stdint.h>
 #include <stdbool.h>
-
-/* Static IP fallback used when DHCP times out (must be outside DHCP range) */
-#define RDE_STATIC_IP     {192, 168,   1,  50}
-#define RDE_SUBNET_MASK   {255, 255, 255,   0}
-#define RDE_GATEWAY       {192, 168,   1,   1}
-#define RDE_DNS_SERVER    {  8,   8,   8,   8}   /* not used, reserved */
 
 /* ── PHY speed selection ──────────────────────────────────────────────────
  * Change W5500_PHY_MODE to diagnose RX signal quality issues.
@@ -37,6 +32,7 @@
 
 void w5500_net_init(void);
 void w5500_net_task(void);
+void w5500_net_restart(void);   /* apply new net_config + restart state machine */
 
 bool w5500_net_is_linked(void);
 void w5500_net_get_ip(uint8_t ip[4]);

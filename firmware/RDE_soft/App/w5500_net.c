@@ -16,6 +16,7 @@
  */
 
 #include "w5500_net.h"
+#include "net_config.h"
 #include "main.h"
 #include "utils/utils.h"
 #include "vxi11/vxi11_server.h"
@@ -83,10 +84,10 @@ static void dhcp_ip_conflict(void) { }
 
 static wiz_NetInfo net_info = {
     .mac  = {0x02, 0x08, 0xDC, 0x00, 0x00, 0x00},
-    .ip   = RDE_STATIC_IP,
-    .sn   = RDE_SUBNET_MASK,
-    .gw   = RDE_GATEWAY,
-    .dns  = RDE_DNS_SERVER,
+    .ip   = {192, 168, 1, 50},
+    .sn   = {255, 255, 255, 0},
+    .gw   = {192, 168, 1, 1},
+    .dns  = {8, 8, 8, 8},
     .dhcp = NETINFO_DHCP,
 };
 
@@ -101,6 +102,67 @@ static void build_mac_from_uid(uint8_t mac[6])
         uint8_t lo = (s[i*2+1] >= 'A') ? (uint8_t)(s[i*2+1] - 'A' + 10) : (uint8_t)(s[i*2+1] - '0');
         mac[3+i] = (uint8_t)((hi << 4) | lo);
     }
+}
+
+/* ── Gratuitous ARP (ARP Announcement) ─────────────────────────────────── */
+
+/* Send an ARP Announcement so the router and other hosts update their ARP
+ * tables immediately after we apply our IP address.
+ *
+ * ARP Probe  (sent by DHCP library): Sender IP = 0.0.0.0, Target IP = X
+ * ARP Announcement (this function):  Sender IP = X,       Target IP = X
+ *
+ * Uses Socket 7 (MACRAW) temporarily; closed after sending. */
+static void send_gratuitous_arp(void)
+{
+    uint8_t mac[6], ip[4];
+    getSHAR(mac);
+    getSIPR(ip);
+
+    /* Build raw Ethernet frame (60 bytes, zero-padded) */
+    uint8_t frame[60];
+    memset(frame, 0, sizeof(frame));
+
+    /* Ethernet header */
+    memset(frame + 0,  0xFF, 6);          /* Dst MAC = broadcast */
+    memcpy(frame + 6,  mac,  6);          /* Src MAC = our MAC   */
+    frame[12] = 0x08; frame[13] = 0x06;  /* EtherType = ARP     */
+
+    /* ARP payload */
+    frame[14] = 0x00; frame[15] = 0x01;  /* HTYPE = Ethernet  */
+    frame[16] = 0x08; frame[17] = 0x00;  /* PTYPE = IPv4      */
+    frame[18] = 0x06;                     /* HLEN = 6          */
+    frame[19] = 0x04;                     /* PLEN = 4          */
+    frame[20] = 0x00; frame[21] = 0x01;  /* OPER = Request    */
+    memcpy(frame + 22, mac, 6);           /* SHA = our MAC     */
+    memcpy(frame + 28, ip,  4);           /* SPA = our IP      */
+    memset(frame + 32, 0xFF, 6);          /* THA = broadcast   */
+    memcpy(frame + 38, ip,  4);           /* TPA = our IP (same as SPA = Announcement) */
+
+    /* W5500 MACRAW is only supported on socket 0.
+     * Close socket 0 (may be the DHCP UDP socket) temporarily.
+     *
+     * We bypass the WIZnet library socket() here because it has an internal
+     * busy-wait (while getSn_SR == SOCK_CLOSED) with no timeout that would
+     * block the main loop indefinitely if W5500 does not acknowledge. */
+    close(DHCP_SOCKET);
+
+    /* Direct register writes: set mode = MACRAW, issue OPEN command */
+    setSn_MR(DHCP_SOCKET, Sn_MR_MACRAW);
+    setSn_CR(DHCP_SOCKET, Sn_CR_OPEN);
+
+    /* Wait max 5 ms for the socket to enter MACRAW state */
+    uint32_t t0 = HAL_GetTick();
+    while (getSn_SR(DHCP_SOCKET) != SOCK_MACRAW) {
+        if ((HAL_GetTick() - t0) >= 5u) {
+            close(DHCP_SOCKET);
+            return;   /* W5500 not responding – skip GARP */
+        }
+    }
+
+    send(DHCP_SOCKET, frame, sizeof(frame));
+    HAL_Delay(5);
+    close(DHCP_SOCKET);
 }
 
 /* ── State machine helpers ──────────────────────────────────────────────── */
@@ -179,6 +241,11 @@ void w5500_net_task(void)
 #endif
 
         build_mac_from_uid(net_info.mac);
+        /* Seed net_info with config static address (DHCP will override if acquired) */
+        const net_config_t *cfg = net_config_get();
+        memcpy(net_info.ip, cfg->ip, 4);
+        memcpy(net_info.sn, cfg->sn, 4);
+        memcpy(net_info.gw, cfg->gw, 4);
         net_info.dhcp = NETINFO_DHCP;
         wizchip_setnetinfo(&net_info);
         enter_state(W5500_ST_WAIT_LINK);
@@ -200,7 +267,13 @@ void w5500_net_task(void)
                 enter_state(W5500_ST_WAIT_LINK);
             }
         } else {
-            enter_state(W5500_ST_DHCP_START);
+            /* Skip DHCP entirely when use_dhcp==0 – go straight to static IP */
+            if (net_config_get()->use_dhcp) {
+                enter_state(W5500_ST_DHCP_START);
+            } else {
+                dhcp_done = false;   /* flag as not acquired → static fallback */
+                enter_state(W5500_ST_APPLY_IP);
+            }
         }
         break;
 
@@ -249,19 +322,29 @@ void w5500_net_task(void)
             getGWfromDHCP(net_info.gw);
             net_info.dhcp = NETINFO_DHCP;
         } else {
-            /* Static fallback */
-            uint8_t ip[] = RDE_STATIC_IP;
-            uint8_t sn[] = RDE_SUBNET_MASK;
-            uint8_t gw[] = RDE_GATEWAY;
-            memcpy(net_info.ip, ip, 4);
-            memcpy(net_info.sn, sn, 4);
-            memcpy(net_info.gw, gw, 4);
+            /* Static fallback: use net_config values */
+            const net_config_t *cfg = net_config_get();
+            memcpy(net_info.ip, cfg->ip, 4);
+            memcpy(net_info.sn, cfg->sn, 4);
+            memcpy(net_info.gw, cfg->gw, 4);
             net_info.dhcp = NETINFO_STATIC;
             close(DHCP_SOCKET);   /* release DHCP socket */
         }
         wizchip_setnetinfo(&net_info);
         dhcp_acquired       = dhcp_done;
         w5500_dbg_dhcp_ok   = dhcp_done;   /* watch in debugger */
+
+        /* ARP Announcement: Sender IP = Target IP = our IP.
+         * Must be sent AFTER wizchip_setnetinfo() sets SIPR.
+         * Uses socket 0 in MACRAW mode (W5500 restriction: MACRAW = socket 0 only). */
+        send_gratuitous_arp();
+
+        /* Reopen socket 0 for DHCP renewal if we acquired a lease.
+         * socket() here re-opens it as UDP without resetting the DHCP state machine. */
+        if (dhcp_done) {
+            socket(DHCP_SOCKET, Sn_MR_UDP, DHCP_CLIENT_PORT, 0);
+        }
+
         enter_state(W5500_ST_OPEN_SOCKETS);
         break;
 
@@ -338,4 +421,13 @@ bool w5500_net_is_linked(void)
 void w5500_net_get_ip(uint8_t ip[4])
 {
     memcpy(ip, net_info.ip, 4);
+}
+
+void w5500_net_restart(void)
+{
+    /* Close all sockets and restart the state machine from reset.
+     * Call after net_config fields have been updated. */
+    vxi11_server_close();
+    dhcp_acquired = false;
+    enter_state(W5500_ST_RESET_ASSERT);
 }
