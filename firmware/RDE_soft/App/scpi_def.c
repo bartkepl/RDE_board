@@ -10,6 +10,7 @@
 #include "w5500_net.h"
 #include "utils/utils.h"
 #include "usbtmc_app.h"
+#include "fram/fm24c64b.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -19,6 +20,10 @@
 char     scpi_reply_buf[512];
 uint16_t scpi_reply_len  = 0;
 bool     scpi_reply_ready = false;
+
+/* ===== Error LED state ===== */
+/* Set by SCPI_Error callback; cleared when error queue drains to zero */
+static volatile bool scpi_error_active = false;
 
 /* ===== Forward declarations ===== */
 static size_t        SCPI_Write(scpi_t *context, const char *data, size_t len);
@@ -170,7 +175,12 @@ void SCPI_Main_Input(const char *data, uint32_t len)
 
 void SCPI_Main_Poll(void)
 {
-    /* No background errors at the moment */
+    /* No background tasks needed; LED_R is driven by main loop via SCPI_Main_HasErrors() */
+}
+
+bool SCPI_Main_HasErrors(void)
+{
+    return scpi_error_active;
 }
 
 /* ===== SCPI callbacks ===== */
@@ -193,7 +203,8 @@ static size_t SCPI_Write(scpi_t *context, const char *data, size_t len)
 static int SCPI_Error(scpi_t *context, int_fast16_t err)
 {
     (void)context;
-    (void)err;
+    /* err != 0: new error pushed; err == 0: queue drained (called by SCPI_ErrorEmitEmpty) */
+    scpi_error_active = (err != 0);
     return 0;
 }
 
@@ -207,9 +218,15 @@ static scpi_result_t SCPI_Reset(scpi_t *context)
 
 /* ===== Command handlers ===== */
 
+/* *TST? – 0 = all OK, bit 0 set = FRAM not reachable */
 static scpi_result_t My_CoreTstQ(scpi_t *context)
 {
-    SCPI_ResultInt32(context, 0);
+    int32_t result = 0;
+    if (!fm24_ping()) {
+        result |= 1;
+        SCPI_ErrorPush(context, SCPI_ERROR_HARDWARE_MISSING);
+    }
+    SCPI_ResultInt32(context, result);
     return SCPI_RES_OK;
 }
 
@@ -529,7 +546,6 @@ static scpi_result_t SCPI_SystemBootloaderEnter(scpi_t *context)
         NVIC->ICPR[i] = 0xFFFFFFFFu;
     }
 
-    __enable_irq();
     __set_MSP(BOOTVTAB->Initial_SP);
     BOOTVTAB->Reset_Handler();
 

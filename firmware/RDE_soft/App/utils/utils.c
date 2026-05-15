@@ -15,6 +15,8 @@ static char serial_short[9];   /* 8 hex chars + NUL */
 static char serial_full[41];   /* 40 hex chars + NUL */
 static uint8_t serial_initialized = 0;
 
+static const char hex[] = "0123456789ABCDEF";
+
 static inline uint32_t fnv1a_32(const uint8_t *data, size_t len)
 {
     uint32_t hash = 2166136261u;
@@ -27,7 +29,6 @@ static inline uint32_t fnv1a_32(const uint8_t *data, size_t len)
 
 static void to_hex(const uint8_t *in, size_t len, char *out)
 {
-    static const char hex[] = "0123456789ABCDEF";
     for (size_t i = 0; i < len; i++) {
         out[2 * i]     = hex[in[i] >> 4];
         out[2 * i + 1] = hex[in[i] & 0x0F];
@@ -47,7 +48,6 @@ static void serial_init_once(void)
     p[4] = HAL_GetUIDw2();
 
     uint32_t hash = fnv1a_32(serial_raw, SERIAL_RAW_LEN);
-    static const char hex[] = "0123456789ABCDEF";
     for (int i = 0; i < 8; i++) {
         serial_short[i] = hex[(hash >> (28 - 4 * i)) & 0xF];
     }

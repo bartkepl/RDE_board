@@ -133,10 +133,11 @@ int main(void)
 
   HAL_GPIO_WritePin(REL_EN_GPIO_Port, REL_EN_Pin, GPIO_PIN_RESET); /* relay PSU off – activate via relay_enable(true) */
   relay_init();
+  SCPI_Main_Init();   /* init SCPI early so startup errors can be pushed to the queue */
 
-  /* FRAM – signal error with red LED if not reachable */
+  /* FRAM – push SCPI error if not reachable; LED_R driven by main loop */
   if (!fm24_ping()) {
-      HAL_GPIO_WritePin(LED_R_GPIO_Port, LED_R_Pin, GPIO_PIN_SET);
+      SCPI_ErrorPush(&scpi_context, SCPI_ERROR_HARDWARE_MISSING);
   }
 
   net_config_init();   /* load network config from FRAM (or flash fallback) before w5500_net_init */
@@ -144,7 +145,6 @@ int main(void)
 
   tud_init(BOARD_TUD_RHPORT);
   tud_disconnect();   /* self-powered: do not pull D+ until VUSB detected */
-  SCPI_Main_Init();
   w5500_net_init();
   /* USER CODE END 2 */
 
@@ -162,6 +162,11 @@ int main(void)
         led_tick = HAL_GetTick();
         HAL_GPIO_TogglePin(LED_G_GPIO_Port, LED_G_Pin);
     }
+
+    /* ── LED_R error indicator – ON while SCPI error queue non-empty ── */
+    /* Cleared automatically when SYST:ERR:NEXT? drains the queue or *CLS is sent */
+    HAL_GPIO_WritePin(LED_R_GPIO_Port, LED_R_Pin,
+                      SCPI_Main_HasErrors() ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
     /* ── USB_DETECT – connect/disconnect D+ based on VUSB presence ── */
     static bool usb_prev = false;
@@ -574,13 +579,6 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_Init(W5500_CLK_GPIO_Port, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
-  /* CubeMX sets W5500_CLK (MCO 25 MHz) to FREQ_LOW (5 MHz max) – fix to VERY_HIGH */
-  GPIO_InitStruct.Pin = W5500_CLK_Pin;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF0_MCO;
-  HAL_GPIO_Init(W5500_CLK_GPIO_Port, &GPIO_InitStruct);
   /* USER CODE END MX_GPIO_Init_2 */
 }
 

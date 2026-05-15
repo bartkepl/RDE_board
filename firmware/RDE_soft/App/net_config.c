@@ -43,9 +43,7 @@ static void apply_defaults(void)
     memcpy(g_cfg.sn, sn, 4);
     memcpy(g_cfg.gw, gw, 4);
     g_cfg.use_dhcp  = NET_CFG_DEFAULT_DHCP;
-    g_cfg._pad[0]   = 0;
-    g_cfg._pad[1]   = 0;
-    g_cfg._pad[2]   = 0;
+    memset(g_cfg._pad, 0, sizeof(g_cfg._pad));
 }
 
 void net_config_init(void)

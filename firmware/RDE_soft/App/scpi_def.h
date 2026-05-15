@@ -18,6 +18,7 @@ extern scpi_t scpi_context;
 void SCPI_Main_Init(void);
 void SCPI_Main_Input(const char *data, uint32_t len);
 void SCPI_Main_Poll(void);
+bool SCPI_Main_HasErrors(void);  /* true while error queue is non-empty → drives LED_R */
 
 /* Shared reply buffer – written by SCPI_Write, read by usbtmc_app and vxi11_server */
 extern char     scpi_reply_buf[512];
