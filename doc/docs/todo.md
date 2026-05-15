@@ -49,7 +49,7 @@
 
 ### Krytyczne / Hardware
 
-- [ ] **PCB v0.4**: naprawa problemu tłumienia RX (umożliwi 100 Mbps Ethernet)
+- [ ] **v0.4**: naprawa problemu tłumienia RX (umożliwi 100 Mbps Ethernet)
 - [ ] Weryfikacja wartości rezystorów sieci dekad na płycie v0.3 pod kątem liniowości
 - [ ] Testy termiczne (dryf rezystancji w zakresie -20°C do +70°C)
 
@@ -76,14 +76,6 @@
 
 - [ ] Schemat elektryczny jako PDF w dokumentacji (link do `prod/`)
 - [ ] Interaktywny BoM (link do `prod/`)
-- [ ] Tutorial wideo: unboxing → podłączenie → pierwsza kalibracja
-- [ ] Application Note: integracja z LabVIEW / MATLAB / pytest
-
-### Testy produkcyjne
-
-- [ ] Test fixture (jig) do zautomatyzowanego testu każdej płyty
-- [ ] Procedura `Go/No-Go` dla wszystkich 60 punktów kalibracj
-- [ ] Skrypt Python do automatycznego testu produkcyjnego
 
 ---
 

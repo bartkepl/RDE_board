@@ -11,8 +11,8 @@
 | Gniazda sprzętowe | 8 niezależnych (TCP/UDP/MACRAW) |
 | Protokoły wbudowane | TCP, UDP, ICMP, IPv4, ARP, IGMP, PPPoE |
 | DHCP | Przez bibliotekę ioLibrary (klient) |
-| Moc | 3,3 V I/O, wbudowane terminatory magistrali |
-| Opakowanie | QFN48 |
+| Zasilanie | 3,3 V I/O, wbudowane terminatory magistrali |
+| Obudowa | QFN48 |
 
 ### Podłączenie SPI2
 
@@ -74,7 +74,7 @@ W5500 ma wbudowany PHY 10/100BASE-T z auto-negocjacją. Podłączony bezpośredn
     // w5500_net_init() – rejestr PHYCFGR
     PHYCFGR = 0x18;  // 10M, half-duplex, forced (nie auto-neg)
     ```
-    Naprawa zaplanowana w rewizji v0.4 PCB.
+    Naprawa zaplanowana w rewizji v0.4.
 
 ---
 
