@@ -123,6 +123,85 @@ dfu-util -a 0 -s 0x08000000:leave -D RDE_soft.bin
 
 ---
 
+## `SYSTem:FRAM:PING?`
+
+Sprawdza obecność modułu FRAM na magistrali I2C.
+
+**Składnia:** `SYSTem:FRAM:PING?`
+
+**Odpowiedź:** `1` (FRAM odpowiada na I2C) lub `0` (NACK/timeout)
+
+```python
+ok = int(inst.query('SYSTem:FRAM:PING?'))
+print('FRAM OK' if ok else 'FRAM BRAK')
+```
+
+!!! note
+    Wynik `0` oznacza brak fizycznego modułu lub zablokowaną magistralę I2C. W takim przypadku konfiguracja sieci jest pobierana z flash STM32G4, a kalibracja z wartości nominalnych.
+
+---
+
+## `SYSTem:FRAM:DIAG?`
+
+Diagnostyka magistrali I2C1 – zwraca surowe dane sprzętowe do analizy zawieszenia.
+
+**Składnia:** `SYSTem:FRAM:DIAG?`
+
+**Odpowiedź:** `"<ping>,<isr_hex>,<hal_state>"`
+
+| Pole | Opis |
+|------|------|
+| `ping` | `1` = FRAM ACK, `0` = NACK/timeout |
+| `isr_hex` | Rejestr `I2C1->ISR` w hex (flagi: BUSY, TCR, TC, STOPF, NACKF, RXNE, TXIS, TXE) |
+| `hal_state` | `HAL_I2C_GetState()`: `0`=READY, `1`=BUSY, `2`=BUSY_TX, `3`=BUSY_RX |
+
+**Przykładowe odpowiedzi:**
+
+```
+"1,0x00000001,0"   → FRAM OK, I2C gotowy
+"0,0x00008000,1"   → BRAK FRAM, I2C zablokowany (BUSY bit ustawiony)
+```
+
+```python
+diag = inst.query('SYSTem:FRAM:DIAG?')
+ping, isr, state = diag.split(',')
+print(f'ping={ping}  ISR={isr}  state={state}')
+```
+
+!!! tip "Kiedy używać"
+    Po wykryciu błędów kalibracji lub konfiguracji – pozwala sprawdzić czy problem tkwi w sprzęcie FRAM czy w magistrali I2C. Przy `BUSY=1` w ISR magistrala jest zablokowana i wymaga resetu przez `SYSTem:RST`.
+
+---
+
+## `SYSTem:I2C:SCAN?`
+
+Skanuje magistralę I2C1 w poszukiwaniu podłączonych urządzeń.
+
+**Składnia:** `SYSTem:I2C:SCAN?`
+
+**Odpowiedź:** lista adresów hex rozdzielona przecinkami lub `NONE`
+
+Skanuje adresy 0x08–0x77 z timeoutem 10 ms na adres.
+
+**Przykładowe odpowiedzi:**
+
+```
+"0x50"          → tylko FRAM FM24C64B
+"0x50,0x51"     → FRAM + drugie urządzenie
+"NONE"          → brak urządzeń I2C
+```
+
+```python
+devices = inst.query('SYSTem:I2C:SCAN?')
+print(f'Urządzenia I2C: {devices}')
+# Oczekiwany wynik: "0x50"
+```
+
+!!! note
+    Czas trwania skanu: ~1,7 s (112 adresów × 10 ms timeout przy braku odpowiedzi). Nie używaj w pętli produkcyjnej.
+
+---
+
 ## `SYSTem:RST`
 
 Miękki reset mikrokontrolera.
@@ -184,3 +263,6 @@ Różnica względem `*RST`:
 | `SYSTem:ID? [SHORT\|LONG]` | SHORT/LONG | HEX string | Numer seryjny z UID MCU |
 | `SYSTem:BOOTloader:ENter` | – | – | Wejdź w DFU bootloader |
 | `SYSTem:RST` | – | – | Miękki reset CPU |
+| `SYSTem:FRAM:PING?` | – | `0` lub `1` | Sprawdź obecność FRAM na I2C |
+| `SYSTem:FRAM:DIAG?` | – | `ping,isr_hex,state` | Diagnostyka magistrali I2C1 |
+| `SYSTem:I2C:SCAN?` | – | lista hex / `NONE` | Skanuj adresy 0x08–0x77 |

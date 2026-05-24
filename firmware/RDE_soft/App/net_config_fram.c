@@ -24,8 +24,8 @@
  *
  * Write algorithm:
  *   1. Calculate CRC of new data
- *   2. Write PRIMARY (data + CRC)
- *   3. Write BACKUP  (data + CRC)
+ *   2. Write PRIMARY (data + CRC), verify by read-back
+ *   3. Write BACKUP  (data + CRC), verify by read-back
  */
 
 #include "net_config.h"
@@ -50,22 +50,29 @@ static void apply_defaults(void)
     memcpy(g_cfg.ip, ip, 4);
     memcpy(g_cfg.sn, sn, 4);
     memcpy(g_cfg.gw, gw, 4);
-    g_cfg.use_dhcp = NET_CFG_DEFAULT_DHCP;
+    g_cfg.use_dhcp  = NET_CFG_DEFAULT_DHCP;
+    g_cfg.phy_mode  = NET_CFG_DEFAULT_PHY_MODE;
     memset(g_cfg._pad, 0, sizeof(g_cfg._pad));
 }
 
-static void write_block(uint16_t base_addr, const net_config_t *cfg)
+/* Write cfg + CRC to one block. Returns 1=OK, 0=I2C error. */
+static uint8_t write_block(uint16_t base_addr, const net_config_t *cfg)
 {
     uint32_t crc = fm24_crc32(cfg, sizeof(net_config_t));
-    fm24_write(base_addr, cfg, sizeof(net_config_t));
-    fm24_write(base_addr + FRAM_NET_CRC_OFFSET, &crc, sizeof(crc));
+    if (fm24_write(base_addr, cfg, sizeof(net_config_t)) != HAL_OK)
+        return 0u;
+    if (fm24_write(base_addr + FRAM_NET_CRC_OFFSET, &crc, sizeof(crc)) != HAL_OK)
+        return 0u;
+    return 1u;
 }
 
 static uint8_t read_block(uint16_t base_addr, net_config_t *cfg)
 {
     uint32_t stored_crc = 0;
-    fm24_read(base_addr, cfg, sizeof(net_config_t));
-    fm24_read(base_addr + FRAM_NET_CRC_OFFSET, &stored_crc, sizeof(stored_crc));
+    if (fm24_read(base_addr, cfg, sizeof(net_config_t)) != HAL_OK)
+        return 0u;
+    if (fm24_read(base_addr + FRAM_NET_CRC_OFFSET, &stored_crc, sizeof(stored_crc)) != HAL_OK)
+        return 0u;
     uint32_t calc_crc = fm24_crc32(cfg, sizeof(net_config_t));
     return (calc_crc == stored_crc) ? 1u : 0u;
 }
@@ -92,14 +99,17 @@ void net_config_init(void)
     write_block(FRAM_NET_BACKUP_ADDR,  &g_cfg);
 }
 
-void net_config_save(void)
+/* Returns 1 if both blocks written and verified OK, 0 on any I2C error. */
+uint8_t net_config_save(void)
 {
     g_cfg.magic = NET_CONFIG_MAGIC;
-    write_block(FRAM_NET_PRIMARY_ADDR, &g_cfg);
-    write_block(FRAM_NET_BACKUP_ADDR,  &g_cfg);
+    uint8_t ok  = write_block(FRAM_NET_PRIMARY_ADDR, &g_cfg);
+    ok         &= write_block(FRAM_NET_BACKUP_ADDR,  &g_cfg);
+    return ok;
 }
 
 net_config_t *net_config_get(void)
 {
     return &g_cfg;
 }
+

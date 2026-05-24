@@ -26,7 +26,6 @@
 #include "usbtmc_app.h"
 #include "relay/relay_ctrl.h"
 #include "relay/relay_cal.h"
-#include "fram/fm24c64b.h"
 #include "net_config.h"
 #include "w5500_net.h"
 /* USER CODE END Includes */
@@ -135,13 +134,8 @@ int main(void)
   relay_init();
   SCPI_Main_Init();   /* init SCPI early so startup errors can be pushed to the queue */
 
-  /* FRAM – push SCPI error if not reachable; LED_R driven by main loop */
-  if (!fm24_ping()) {
-      SCPI_ErrorPush(&scpi_context, SCPI_ERROR_HARDWARE_MISSING);
-  }
-
-  net_config_init();   /* load network config from FRAM (or flash fallback) before w5500_net_init */
-  relay_cal_init();    /* load decade calibration from FRAM */
+  net_config_init();   /* load network config from NVM before w5500_net_init */
+  relay_cal_init();    /* load decade calibration from NVM */
 
   tud_init(BOARD_TUD_RHPORT);
   tud_disconnect();   /* self-powered: do not pull D+ until VUSB detected */
@@ -169,8 +163,20 @@ int main(void)
                       SCPI_Main_HasErrors() ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
     /* ── USB_DETECT – connect/disconnect D+ based on VUSB presence ── */
-    static bool usb_prev = false;
-    bool usb_now = (HAL_GPIO_ReadPin(USB_DETECT_GPIO_Port, USB_DETECT_Pin) == GPIO_PIN_SET);
+    /* 20 ms debounce: require stable signal before acting to avoid spurious
+     * connect/disconnect on VBUS glitches. */
+    static bool     usb_prev    = false;
+    static bool     usb_stable  = false;
+    static uint32_t usb_deb_ms  = 0;
+    bool usb_raw = (HAL_GPIO_ReadPin(USB_DETECT_GPIO_Port, USB_DETECT_Pin) == GPIO_PIN_SET);
+    if (usb_raw != usb_stable) {
+        if (HAL_GetTick() - usb_deb_ms >= 20u) {
+            usb_stable = usb_raw;
+        }
+    } else {
+        usb_deb_ms = HAL_GetTick();
+    }
+    bool usb_now = usb_stable;
 
     if (usb_now && !usb_prev) {
         tud_connect();
@@ -208,17 +214,16 @@ void SystemClock_Config(void)
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSI48;
-  RCC_OscInitStruct.HSIState = RCC_HSI_ON;
-  RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
-  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
-  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV2;
-  RCC_OscInitStruct.PLL.PLLN = 25;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = RCC_PLLM_DIV5;
+  RCC_OscInitStruct.PLL.PLLN = 50;
   RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
   RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV4;
-  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV4;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -233,11 +238,11 @@ void SystemClock_Config(void)
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_4) != HAL_OK)
   {
     Error_Handler();
   }
-  HAL_RCC_MCOConfig(RCC_MCO1, RCC_MCO1SOURCE_SYSCLK, RCC_MCODIV_2);
+  HAL_RCC_MCOConfig(RCC_MCO1, RCC_MCO1SOURCE_HSE, RCC_MCODIV_1);
 }
 
 /**
@@ -287,7 +292,7 @@ static void MX_I2C1_Init(void)
 
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
-  hi2c1.Init.Timing = 0xC0100F14;
+  hi2c1.Init.Timing = 0x20E2A4ED;
   hi2c1.Init.OwnAddress1 = 0;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -382,7 +387,7 @@ static void MX_SPI2_Init(void)
   hspi2.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi2.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi2.Init.NSS = SPI_NSS_SOFT;
-  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi2.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_8;
   hspi2.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi2.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi2.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -541,6 +546,7 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 

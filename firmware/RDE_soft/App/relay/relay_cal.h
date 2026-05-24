@@ -45,8 +45,9 @@ typedef struct {
 /* Load calibration from FRAM (primary → backup → nominal defaults). */
 void relay_cal_init(void);
 
-/* Write current calibration data + config to FRAM (primary + backup). */
-void relay_cal_save(void);
+/* Write current calibration data + config to FRAM (primary + backup).
+ * Returns 1 if all blocks written OK, 0 on any I2C error. */
+uint8_t relay_cal_save(void);
 
 /* Reset in-RAM calibration values to nominal (does NOT write to FRAM). */
 void relay_cal_reset(void);

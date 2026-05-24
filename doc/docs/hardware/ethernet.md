@@ -31,21 +31,22 @@ Prędkość SPI2: **10 MHz** (przez prescaler APB1, konfiguracja w `MX_SPI2_Init
 
 ## Adres MAC
 
-Adres MAC jest generowany z **UID MCU** (96-bitowy unikalny identyfikator ST):
+Adres MAC jest generowany z prefiksu **WIZnet OUI** i 3 bajtów z unikalnego numeru seryjnego MCU (`serial_get_full()`):
 
 ```c
-mac[0] = 0x02;           // bit U/L = 0 (locally administered), bit I/G = 0 (unicast)
-mac[1] = uid[0];
-mac[2] = uid[4];
-mac[3] = uid[8];
-mac[4] = uid[10];
-mac[5] = uid[11];
+mac[0] = 0x00;   /* WIZnet OUI – globally administered unicast */
+mac[1] = 0x08;
+mac[2] = 0xDC;
+/* Ostatnie 3 bajty z numeru seryjnego (hex ASCII → binary) */
+mac[3] = (serial[0] << 4) | serial[1];
+mac[4] = (serial[2] << 4) | serial[3];
+mac[5] = (serial[4] << 4) | serial[5];
 ```
 
-Dzięki temu każde urządzenie ma unikalny adres MAC bez zewnętrznego układu pamięci.
+Dzięki temu każde urządzenie ma unikalny adres MAC oparty na zarejestrowanym OUI producenta układu Ethernet (WIZnet Co., Ltd).
 
 !!! info
-    Prefix `0x02` oznacza locally administered address (LAA) – nie jest przypisany przez IEEE, ale nie koliduje z globalnymi adresami OUI gdy bit U/L = 1.
+    Prefix `00:08:DC` to zarejestrowany OUI firmy WIZnet (globally administered). Trzy ostatnie bajty są wyznaczane ze skróconego numeru seryjnego MCU.
 
 ---
 
@@ -68,13 +69,23 @@ W5500 ma 8 niezależnych gniazd sprzętowych. RDE używa:
 
 W5500 ma wbudowany PHY 10/100BASE-T z auto-negocjacją. Podłączony bezpośrednio do złącza RJ-45 z transformatorem (magnetic module lub integrowany w gnieździe).
 
-!!! warning "Ograniczenie v0.3 PCB"
-    W rewizji v0.3 zaobserwowano tłumienie sygnału RX linii Ethernet, które uniemożliwia prawidłową pracę przy **100 Mbps**. Firmware wymusza tryb **10 Mbps half-duplex** przez rejestr PHY Configuration Register:
-    ```c
-    // w5500_net_init() – rejestr PHYCFGR
-    PHYCFGR = 0x18;  // 10M, half-duplex, forced (nie auto-neg)
-    ```
-    Naprawa zaplanowana w rewizji v0.4.
+### Konfiguracja prędkości PHY przez SCPI
+
+Tryb PHY jest konfigurowany w czasie rzeczywistym komendą `NET:PHY:MODE` (integer 0/1/2) i przechowywany w FRAM. Zmiana wchodzi w życie po `NET:APPLy` (restart stosu W5500).
+
+| Kod | Tryb | Komenda SCPI | PHYCFGR (reset/run) | OPMDC | Uwagi |
+|:---:|:---:|:---:|:---:|:---:|------|
+| `0` | Auto-negocjacja      | `NET:PHY:MODE 0` | (domyślne z PMODE) | – | Wymaga dobrego sygnału 100M RX |
+| `1` | 10 Mbps half-duplex  | `NET:PHY:MODE 1` | `0x40` / `0xC0`    | `000` | Działa przy osłabionym RX |
+| `2` | 100 Mbps full-duplex | `NET:PHY:MODE 2` | `0x58` / `0xD8`    | `011` | Wymaga dobrego sygnału RX |
+
+!!! danger "Uwaga – nie używaj 0x70/0xF0!"
+    Te wartości kodują **OPMDC=110 (PHY Power Down)**, nie 100M FD. Poprawne dla 100BT FD bez auto-neg to **OPMDC=011 → 0x58/0xD8**.
+
+```python
+inst.write('NET:PHY:MODE 2')   # 100M FD
+inst.write('NET:APPLy')
+```
 
 ---
 
@@ -102,10 +113,10 @@ W5500 ma wbudowany PHY 10/100BASE-T z auto-negocjacją. Podłączony bezpośredn
 | Parametr | Wartość domyślna |
 |---------|:---:|
 | DHCP | Włączony |
-| Statyczne IP (fallback) | `192.168.1.50` |
+| Statyczne IP (fallback) | `192.168.1.6` |
 | Maska podsieci | `255.255.255.0` |
 | Brama domyślna | `192.168.1.1` |
-| Link speed | 10 Mbps half-duplex (v0.3) |
+| Link speed | Konfigurowalny przez SCPI `NET:PHY:MODE` (domyślnie: AUTO) |
 
 Zmiana przez SCPI: patrz [NET – konfiguracja sieci](../scpi/network.md).
 
@@ -124,7 +135,7 @@ w5500_net_init()
    └── DHCP disabled? ──YES──► Użyj natychmiast statycznego IP
 ```
 
-Timeout DHCP: ok. **10 sekund** (konfigurowalne w `w5500_net.h`).
+Timeout DHCP: **12 sekund** (`DHCP_TIMEOUT_MS` w `w5500_net.c`).
 
 Po przyznaniu adresu przez DHCP, aktualny adres można odczytać komendą `NET:STATe?`.
 

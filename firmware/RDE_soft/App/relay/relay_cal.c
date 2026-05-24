@@ -31,11 +31,14 @@ static void fill_nominal(cal_data_t *d)
     }
 }
 
-static void write_data_block(uint16_t addr, const cal_data_t *d)
+static uint8_t write_data_block(uint16_t addr, const cal_data_t *d)
 {
     uint32_t crc = fm24_crc32(d, sizeof(cal_data_t));
-    fm24_write(addr, d, sizeof(cal_data_t));
-    fm24_write(addr + sizeof(cal_data_t), &crc, sizeof(crc));
+    if (fm24_write(addr, d, sizeof(cal_data_t)) != HAL_OK)
+        return 0u;
+    if (fm24_write(addr + sizeof(cal_data_t), &crc, sizeof(crc)) != HAL_OK)
+        return 0u;
+    return 1u;
 }
 
 static uint8_t read_data_block(uint16_t addr, cal_data_t *d)
@@ -46,11 +49,14 @@ static uint8_t read_data_block(uint16_t addr, cal_data_t *d)
     return (fm24_crc32(d, sizeof(cal_data_t)) == stored) ? 1u : 0u;
 }
 
-static void write_cfg_block(uint16_t addr, const cal_config_t *c)
+static uint8_t write_cfg_block(uint16_t addr, const cal_config_t *c)
 {
     uint32_t crc = fm24_crc32(c, sizeof(cal_config_t));
-    fm24_write(addr, c, sizeof(cal_config_t));
-    fm24_write(addr + sizeof(cal_config_t), &crc, sizeof(crc));
+    if (fm24_write(addr, c, sizeof(cal_config_t)) != HAL_OK)
+        return 0u;
+    if (fm24_write(addr + sizeof(cal_config_t), &crc, sizeof(crc)) != HAL_OK)
+        return 0u;
+    return 1u;
 }
 
 static uint8_t read_cfg_block(uint16_t addr, cal_config_t *c)
@@ -112,14 +118,19 @@ void relay_cal_init(void)
     g_loaded = data_ok;
 }
 
-void relay_cal_save(void)
+uint8_t relay_cal_save(void)
 {
+    if (!fm24_ping())
+        return 0u;
+
     g_cfg.magic = CAL_MAGIC;
-    write_data_block(FRAM_CAL_DATA_PRIMARY, &g_cal);
-    write_data_block(FRAM_CAL_DATA_BACKUP,  &g_cal);
-    write_cfg_block(FRAM_CAL_CFG_PRIMARY, &g_cfg);
-    write_cfg_block(FRAM_CAL_CFG_BACKUP,  &g_cfg);
-    g_loaded = 1;
+    uint8_t ok = 1u;
+    ok &= write_data_block(FRAM_CAL_DATA_PRIMARY, &g_cal);
+    ok &= write_data_block(FRAM_CAL_DATA_BACKUP,  &g_cal);
+    ok &= write_cfg_block(FRAM_CAL_CFG_PRIMARY, &g_cfg);
+    ok &= write_cfg_block(FRAM_CAL_CFG_BACKUP,  &g_cfg);
+    if (ok) g_loaded = 1;
+    return ok;
 }
 
 void relay_cal_reset(void)

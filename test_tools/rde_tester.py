@@ -188,7 +188,7 @@ class RdeTester:
         net_frame.grid(row=4, column=0, columnspan=2, sticky="ew", **pad)
 
         ttk.Label(net_frame, text="Static IP:").grid(row=0, column=0, **pad)
-        self.net_ip_var = tk.StringVar(value="192.168.1.50")
+        self.net_ip_var = tk.StringVar(value="192.168.1.6")
         ttk.Entry(net_frame, textvariable=self.net_ip_var, width=16).grid(row=0, column=1, **pad)
         ttk.Button(net_frame, text="Set", command=lambda: self._net_set_ip()).grid(row=0, column=2, **pad)
 

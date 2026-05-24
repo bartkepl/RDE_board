@@ -51,11 +51,16 @@ static scpi_result_t SCPI_NetGwSet(scpi_t *context);
 static scpi_result_t SCPI_NetGwQ(scpi_t *context);
 static scpi_result_t SCPI_NetDhcpSet(scpi_t *context);
 static scpi_result_t SCPI_NetDhcpQ(scpi_t *context);
+static scpi_result_t SCPI_NetPhySet(scpi_t *context);
+static scpi_result_t SCPI_NetPhyQ(scpi_t *context);
 static scpi_result_t SCPI_NetApply(scpi_t *context);
 static scpi_result_t SCPI_NetStateQ(scpi_t *context);
 static scpi_result_t SCPI_SystemBootloaderEnter(scpi_t *context);
 static scpi_result_t SCPI_SystemReset(scpi_t *context);
 static scpi_result_t SCPI_SystemIdQ(scpi_t *context);
+static scpi_result_t SCPI_SystemFramPingQ(scpi_t *context);
+static scpi_result_t SCPI_SystemFramDiagQ(scpi_t *context);
+static scpi_result_t SCPI_SystemI2cScanQ(scpi_t *context);
 static scpi_result_t SCPI_CalDecadeSet(scpi_t *context);
 static scpi_result_t SCPI_CalDecadeQ(scpi_t *context);
 static scpi_result_t SCPI_CalSave(scpi_t *context);
@@ -90,6 +95,9 @@ static const scpi_command_t scpi_commands[] = {
     { .pattern = "SYSTem:BOOTloader:ENter", .callback = SCPI_SystemBootloaderEnter, },
     { .pattern = "SYSTem:RST",              .callback = SCPI_SystemReset,           },
     { .pattern = "SYSTem:ID?",              .callback = SCPI_SystemIdQ,             },
+    { .pattern = "SYSTem:FRAM:PING?",       .callback = SCPI_SystemFramPingQ,       },
+    { .pattern = "SYSTem:FRAM:DIAG?",       .callback = SCPI_SystemFramDiagQ,       },
+    { .pattern = "SYSTem:I2C:SCAN?",        .callback = SCPI_SystemI2cScanQ,        },
 
     /* Resistance decade control */
     { .pattern = "RESistance:VALue",   .callback = SCPI_ResistanceValueSet,  },
@@ -118,10 +126,12 @@ static const scpi_command_t scpi_commands[] = {
     { .pattern = "NET:SMASk?",     .callback = SCPI_NetMaskQ,   },
     { .pattern = "NET:GATEway",    .callback = SCPI_NetGwSet,   },
     { .pattern = "NET:GATEway?",   .callback = SCPI_NetGwQ,     },
-    { .pattern = "NET:DHCP",       .callback = SCPI_NetDhcpSet, },
-    { .pattern = "NET:DHCP?",      .callback = SCPI_NetDhcpQ,   },
-    { .pattern = "NET:APPLy",      .callback = SCPI_NetApply,   },
-    { .pattern = "NET:STATe?",     .callback = SCPI_NetStateQ,  },
+    { .pattern = "NET:DHCP",        .callback = SCPI_NetDhcpSet, },
+    { .pattern = "NET:DHCP?",       .callback = SCPI_NetDhcpQ,   },
+    { .pattern = "NET:PHY:MODE",    .callback = SCPI_NetPhySet,  },
+    { .pattern = "NET:PHY:MODE?",   .callback = SCPI_NetPhyQ,    },
+    { .pattern = "NET:APPLy",       .callback = SCPI_NetApply,   },
+    { .pattern = "NET:STATe?",      .callback = SCPI_NetStateQ,  },
 
     /* Decade calibration */
     { .pattern = "CALibration:DECade",   .callback = SCPI_CalDecadeSet,   },
@@ -502,11 +512,44 @@ static scpi_result_t SCPI_NetDhcpQ(scpi_t *context)
     return SCPI_RES_OK;
 }
 
-/* NET:APPLy  –  save config to flash + restart W5500 state machine */
+/* NET:PHY:MODE <0|1|2>  –  set PHY speed mode in RAM config.
+ *
+ *   0 = NET_PHY_AUTO    (auto-negotiation via PMODE pins)
+ *   1 = NET_PHY_10M_HD  (force 10 Mbps half-duplex)
+ *   2 = NET_PHY_100M_FD (force 100 Mbps full-duplex)
+ *
+ * Integer is used (instead of mnemonics like "10M") because libscpi parses
+ * "10M"/"100M" as decimal-with-suffix tokens, not as program mnemonics. */
+static scpi_result_t SCPI_NetPhySet(scpi_t *context)
+{
+    uint32_t mode = 0;
+    if (!SCPI_ParamUInt32(context, &mode, TRUE))
+        SCPI_PUSH_ERR(context, SCPI_ERROR_MISSING_PARAMETER);
+    if (mode > 2u)
+        SCPI_PUSH_ERR(context, SCPI_ERROR_DATA_OUT_OF_RANGE);
+    net_config_get()->phy_mode = (uint8_t)mode;
+    return SCPI_RES_OK;
+}
+
+/* NET:PHY:MODE?  –  returns "AUTO", "10M", or "100M" (human-readable) */
+static scpi_result_t SCPI_NetPhyQ(scpi_t *context)
+{
+    const char *label;
+    switch (net_config_get()->phy_mode) {
+    case NET_PHY_10M_HD:  label = "10M";  break;
+    case NET_PHY_100M_FD: label = "100M"; break;
+    default:              label = "AUTO"; break;
+    }
+    SCPI_ResultCharacters(context, label, strlen(label));
+    return SCPI_RES_OK;
+}
+
+/* NET:APPLy  –  save config to FRAM + restart W5500 state machine.
+ * Pushes SCPI_ERROR_HARDWARE_MISSING if FRAM write/verify fails. */
 static scpi_result_t SCPI_NetApply(scpi_t *context)
 {
-    (void)context;
-    net_config_save();
+    if (!net_config_save())
+        SCPI_PUSH_ERR(context, SCPI_ERROR_HARDWARE_MISSING);
     w5500_net_restart();
     return SCPI_RES_OK;
 }
@@ -580,6 +623,53 @@ static scpi_result_t SCPI_SystemIdQ(scpi_t *context)
     return SCPI_RES_OK;
 }
 
+/* SYSTem:FRAM:PING?  –  1 if FRAM responds on I2C, 0 if not */
+static scpi_result_t SCPI_SystemFramPingQ(scpi_t *context)
+{
+    SCPI_ResultBool(context, fm24_ping());
+    return SCPI_RES_OK;
+}
+
+/* SYSTem:FRAM:DIAG?  –  returns "ping,isr,state" for I2C hardware diagnosis
+ * ping:  1=FRAM ACK, 0=NACK/timeout
+ * isr:   I2C1->ISR register (raw hex) – BUSY,TCR,TC,STOPF,NACKF,ADDR,RXNE,TXIS,TXE
+ * state: HAL I2C state (0=READY,1=BUSY,...) */
+static scpi_result_t SCPI_SystemFramDiagQ(scpi_t *context)
+{
+    extern I2C_HandleTypeDef hi2c1;
+    uint8_t ping   = fm24_ping();
+    uint32_t isr   = hi2c1.Instance->ISR;
+    uint32_t state = (uint32_t)HAL_I2C_GetState(&hi2c1);
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%u,0x%08lX,%lu", ping, (unsigned long)isr, (unsigned long)state);
+    SCPI_ResultCharacters(context, buf, strlen(buf));
+    return SCPI_RES_OK;
+}
+
+/* SYSTem:I2C:SCAN?  –  scan addresses 0x08..0x77, return comma-separated hex list
+ * e.g. "0x50,0x51" or "NONE" if nothing found */
+static scpi_result_t SCPI_SystemI2cScanQ(scpi_t *context)
+{
+    extern I2C_HandleTypeDef hi2c1;
+    char buf[128];
+    uint16_t pos = 0;
+    uint8_t found = 0;
+
+    for (uint8_t addr = 0x08; addr <= 0x77; addr++) {
+        if (HAL_I2C_IsDeviceReady(&hi2c1, (uint16_t)(addr << 1), 1, 10) == HAL_OK) {
+            if (found) buf[pos++] = ',';
+            pos += (uint16_t)snprintf(buf + pos, sizeof(buf) - pos, "0x%02X", addr);
+            found = 1;
+        }
+    }
+    if (!found) {
+        memcpy(buf, "NONE", 4);
+        pos = 4;
+    }
+    SCPI_ResultCharacters(context, buf, pos);
+    return SCPI_RES_OK;
+}
+
 /* ===== Calibration command handlers ===== */
 
 /* CALibration:DECade <1-6>,<0-9>,<milliohm>
@@ -612,8 +702,8 @@ static scpi_result_t SCPI_CalDecadeQ(scpi_t *context)
 /* CALibration:SAVE  –  write current calibration data to FRAM */
 static scpi_result_t SCPI_CalSave(scpi_t *context)
 {
-    (void)context;
-    relay_cal_save();
+    if (!relay_cal_save())
+        SCPI_PUSH_ERR(context, SCPI_ERROR_HARDWARE_MISSING);
     return SCPI_RES_OK;
 }
 

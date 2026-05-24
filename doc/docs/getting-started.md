@@ -73,7 +73,7 @@ Podłącz kabel RJ-45 do tej samej podsieci co komputer. Urządzenie automatyczn
     ```
     Hostname mDNS: `RDE-<serial>.local`
 
-Domyślny fallback jeśli brak DHCP: **`192.168.1.50`**
+Domyślny fallback jeśli brak DHCP: **`192.168.1.6`**
 
 ### 2. Pierwsze połączenie VXI-11
 
@@ -81,7 +81,7 @@ Domyślny fallback jeśli brak DHCP: **`192.168.1.50`**
 import pyvisa
 
 rm = pyvisa.ResourceManager('@py')
-inst = rm.open_resource('TCPIP::192.168.1.50::INSTR')
+inst = rm.open_resource('TCPIP::192.168.1.6::INSTR')
 inst.timeout = 5000
 print(inst.query('*IDN?'))
 # bartkepl,RDE,1.0,A3F7B201
@@ -139,7 +139,7 @@ def check_errors(inst):
         print(f'  SCPI Error {code}: {desc.strip()}')
 
 rm = pyvisa.ResourceManager('@py')
-inst = rm.open_resource('TCPIP::192.168.1.50::INSTR')
+inst = rm.open_resource('TCPIP::192.168.1.6::INSTR')
 inst.timeout = 5000
 
 # Zresetuj i ustaw rezystancję
@@ -179,7 +179,7 @@ print(d)   # 7
 
 ```python
 print(inst.query('NET:DHCP?'))        # 1
-print(inst.query('NET:IPADdress?'))   # 192.168.1.50
+print(inst.query('NET:IPADdress?'))   # 192.168.1.6
 print(inst.query('NET:STATe?'))       # 192.168.1.67  (adres DHCP)
 ```
 

@@ -2,7 +2,7 @@
  * w5500_net.c – W5500 Ethernet non-blocking state machine for RDE_board
  *
  * SPI2 = W5500 at 12.5 Mbps, Mode 0, software CS on PB12.
- * MCO1 (PA8) outputs SYSCLK/2 = 25 MHz as W5500_CLK (set in SystemClock_Config).
+ * MCO1 (PA8) outputs HSE/1 = 25 MHz as W5500_CLK (set in SystemClock_Config).
  *
  * w5500_net_init() – registers SPI callbacks, starts async reset sequence
  * w5500_net_task() – call every main-loop iteration; drives state machine
@@ -60,14 +60,6 @@ static w5500_state_t state         = W5500_ST_RESET_ASSERT;
 static uint32_t      state_tick    = 0;
 static uint32_t      dhcp_tick_ms  = 0;
 static bool          dhcp_acquired = false;
-
-/* Debugger-visible: watch these in STM32CubeIDE Expressions view */
-volatile uint8_t w5500_dbg_versionr    = 0;     /* must be 0x04 */
-volatile int     w5500_dbg_state       = 0;     /* RUNNING = 11 */
-volatile bool    w5500_dbg_dhcp_ok     = false; /* true = DHCP ok, false = static */
-volatile uint8_t w5500_dbg_dhcp_result = 0xFF;  /* last DHCP_run() return code */
-volatile uint8_t w5500_dbg_sn_sr       = 0;     /* socket 0 status – must stay 0x22 (SOCK_UDP) during DHCP */
-volatile uint16_t w5500_dbg_rx_rsr     = 0;     /* socket 0 RX bytes available */
 
 /* ── DHCP ───────────────────────────────────────────────────────────────── */
 
@@ -169,9 +161,8 @@ static void send_gratuitous_arp(void)
 
 static void enter_state(w5500_state_t s)
 {
-    state           = s;
-    state_tick      = HAL_GetTick();
-    w5500_dbg_state = (int)s;
+    state      = s;
+    state_tick = HAL_GetTick();
 }
 
 static bool elapsed(uint32_t ms)
@@ -214,10 +205,8 @@ void w5500_net_task(void)
         }
         break;
 
-    /* ── Chip verification – guards against SPI deadlock in socket() ── */
     case W5500_ST_CHECK_CHIP:
-        w5500_dbg_versionr = getVERSIONR();   /* watch in debugger: must be 0x04 */
-        if (w5500_dbg_versionr == 0x04) {
+        if (getVERSIONR() == 0x04) {
             enter_state(W5500_ST_CHIP_INIT);
         } else {
             enter_state(W5500_ST_ERROR);
@@ -229,16 +218,27 @@ void w5500_net_task(void)
         uint8_t rx[8] = {2, 2, 2, 2, 2, 2, 2, 2};
         wizchip_init(tx, rx);
 
-        /* PHY speed – controlled by W5500_PHY_MODE in w5500_net.h.
+        /* PHY speed – configured at runtime from net_config_t.phy_mode (FRAM).
          * PHYCFGR bits: [7]=RST [6]=OPMD [5]=DPX [4]=SPD
          *   reset phase : RST=0, OPMD=1, desired SPD/DPX
          *   run phase   : RST=1, OPMD=1, desired SPD/DPX */
-#if W5500_PHY_MODE == W5500_PHY_10M_HD
-        setPHYCFGR(0x40); HAL_Delay(2); setPHYCFGR(0xC0); HAL_Delay(100);
-#elif W5500_PHY_MODE == W5500_PHY_100M_FD
-        setPHYCFGR(0x70); HAL_Delay(2); setPHYCFGR(0xF0); HAL_Delay(100);
-#else /* W5500_PHY_AUTO – auto-negotiation via PMODE pins, no override needed */
-#endif
+        /* PHYCFGR encoding:
+         *   bit 7   = RST   (0 assert, 1 release)
+         *   bit 6   = OPMD  (1 = override PMODE pins with OPMDC)
+         *   bits 5..3 = OPMDC: 000=10BT HD  011=100BT FD  111=all-auto  110=POWER DOWN
+         * IMPORTANT: do NOT use 0x70/0xF0 — that encodes OPMDC=110 = power down. */
+        switch (net_config_get()->phy_mode) {
+        case NET_PHY_10M_HD:
+            /* OPMD=1, OPMDC=000 (10BT HD, no auto-neg) */
+            setPHYCFGR(0x40); HAL_Delay(2); setPHYCFGR(0xC0); HAL_Delay(100);
+            break;
+        case NET_PHY_100M_FD:
+            /* OPMD=1, OPMDC=011 (100BT FD, no auto-neg) */
+            setPHYCFGR(0x58); HAL_Delay(2); setPHYCFGR(0xD8); HAL_Delay(100);
+            break;
+        default: /* NET_PHY_AUTO – HW reset restores OPMD=0 → PMODE pins drive auto-neg */
+            break;
+        }
 
         build_mac_from_uid(net_info.mac);
         /* Seed net_info with config static address (DHCP will override if acquired) */
@@ -305,9 +305,7 @@ void w5500_net_task(void)
         }
         if (!dhcp_done && (now - dhcp_run_ms >= 50u)) {
             dhcp_run_ms = now;
-            w5500_dbg_sn_sr   = getSn_SR(DHCP_SOCKET);    /* should stay 0x22=SOCK_UDP */
-            w5500_dbg_rx_rsr  = getSn_RX_RSR(DHCP_SOCKET); /* >0 means OFFER arrived */
-            w5500_dbg_dhcp_result = DHCP_run();   /* 0=FAIL 1=RUNNING 2=ASSIGN */
+            DHCP_run();
         }
         if (dhcp_done || elapsed(DHCP_TIMEOUT_MS)) {
             enter_state(W5500_ST_APPLY_IP);
@@ -331,8 +329,7 @@ void w5500_net_task(void)
             close(DHCP_SOCKET);   /* release DHCP socket */
         }
         wizchip_setnetinfo(&net_info);
-        dhcp_acquired       = dhcp_done;
-        w5500_dbg_dhcp_ok   = dhcp_done;   /* watch in debugger */
+        dhcp_acquired = dhcp_done;
 
         /* ARP Announcement: Sender IP = Target IP = our IP.
          * Must be sent AFTER wizchip_setnetinfo() sets SIPR.

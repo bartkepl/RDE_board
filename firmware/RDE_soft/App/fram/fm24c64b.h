@@ -9,11 +9,11 @@
  * FRAM memory map (project RDE_board):
  *   0x0000–0x001F  net_config_t PRIMARY + CRC32 + padding  (32 B)
  *   0x0020–0x003F  net_config_t BACKUP  + CRC32 + padding  (32 B)
- *   0x0040–0x013F  cal_data_t   PRIMARY + CRC32            (244 B)
- *   0x0140–0x014B  cal_config_t PRIMARY + CRC32            (12 B)
- *   0x0150–0x024F  cal_data_t   BACKUP  + CRC32            (244 B --> starts at 0x0150)
- *   0x0250–0x025B  cal_config_t BACKUP  + CRC32            (12 B)
- *   0x025C–0x1FFF  Free
+ *   0x0040–0x0133  cal_data_t   PRIMARY + CRC32            (244 B)
+ *   0x0134–0x013F  cal_config_t PRIMARY + CRC32            (12 B)
+ *   0x0140–0x0233  cal_data_t   BACKUP  + CRC32            (244 B)
+ *   0x0234–0x023F  cal_config_t BACKUP  + CRC32            (12 B)
+ *   0x0240–0x1FFF  Free
  *
  * CRC: hardware CRC-32 via hcrc (CRC_INPUTDATA_FORMAT_BYTES, default polynomial)
  */
@@ -42,6 +42,9 @@ HAL_StatusTypeDef fm24_read(uint16_t addr, void *data, uint16_t len);
 
 /* Verify FRAM is reachable on I2C bus. Returns 1 if present, 0 if not. */
 uint8_t fm24_ping(void);
+
+/* Reset I2C peripheral after a bus error or timeout (HAL DeInit + Init). */
+void fm24_recover_bus(void);
 
 /* ── CRC helper (uses hardware hcrc, CRC-32) ────────────────────────────── */
 

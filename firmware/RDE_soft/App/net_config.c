@@ -43,6 +43,7 @@ static void apply_defaults(void)
     memcpy(g_cfg.sn, sn, 4);
     memcpy(g_cfg.gw, gw, 4);
     g_cfg.use_dhcp  = NET_CFG_DEFAULT_DHCP;
+    g_cfg.phy_mode  = NET_CFG_DEFAULT_PHY_MODE;
     memset(g_cfg._pad, 0, sizeof(g_cfg._pad));
 }
 
@@ -56,7 +57,7 @@ void net_config_init(void)
     }
 }
 
-void net_config_save(void)
+uint8_t net_config_save(void)
 {
     g_cfg.magic = NET_CONFIG_MAGIC;
 
@@ -69,16 +70,22 @@ void net_config_save(void)
         .NbPages   = 1,
     };
     uint32_t page_err = 0;
-    HAL_FLASHEx_Erase(&erase, &page_err);
+    HAL_StatusTypeDef st = HAL_FLASHEx_Erase(&erase, &page_err);
 
-    const uint64_t *src  = (const uint64_t *)&g_cfg;
-    uint32_t        addr = CONFIG_FLASH_ADDR;
-    for (size_t i = 0; i < sizeof(net_config_t) / 8; i++) {
-        HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr, src[i]);
-        addr += 8;
+    if (st == HAL_OK) {
+        const uint64_t *src  = (const uint64_t *)&g_cfg;
+        uint32_t        addr = CONFIG_FLASH_ADDR;
+        for (size_t i = 0; i < sizeof(net_config_t) / 8; i++) {
+            if (HAL_FLASH_Program(FLASH_TYPEPROGRAM_DOUBLEWORD, addr, src[i]) != HAL_OK) {
+                st = HAL_ERROR;
+                break;
+            }
+            addr += 8;
+        }
     }
 
     HAL_FLASH_Lock();
+    return (st == HAL_OK) ? 1u : 0u;
 }
 
 net_config_t *net_config_get(void)

@@ -12,31 +12,47 @@
 #include "fm24c64b.h"
 #include <string.h>
 
-#define FM24_TIMEOUT_MS  10u
+/* 240 B @ 100 kHz I2C needs ~22 ms; use 100 ms for a generous margin */
+#define FM24_TIMEOUT_MS  100u
 
 extern I2C_HandleTypeDef hi2c1;
 extern CRC_HandleTypeDef hcrc;
 
+/* Recover I2C bus after a timeout or error by resetting the peripheral.
+ * After HAL_TIMEOUT the BUSY flag may remain set — DeInit+Init clears it. */
+void fm24_recover_bus(void)
+{
+    HAL_I2C_DeInit(&hi2c1);
+    HAL_Delay(2);
+    HAL_I2C_Init(&hi2c1);
+}
+
 HAL_StatusTypeDef fm24_write(uint16_t addr, const void *data, uint16_t len)
 {
-    return HAL_I2C_Mem_Write(&hi2c1,
-                             FM24_ADDR << 1,
-                             addr,
-                             I2C_MEMADD_SIZE_16BIT,
-                             (uint8_t *)data,
-                             len,
-                             FM24_TIMEOUT_MS);
+    HAL_StatusTypeDef st = HAL_I2C_Mem_Write(&hi2c1,
+                                              FM24_ADDR << 1,
+                                              addr,
+                                              I2C_MEMADD_SIZE_16BIT,
+                                              (uint8_t *)data,
+                                              len,
+                                              FM24_TIMEOUT_MS);
+    if (st != HAL_OK)
+        fm24_recover_bus();
+    return st;
 }
 
 HAL_StatusTypeDef fm24_read(uint16_t addr, void *data, uint16_t len)
 {
-    return HAL_I2C_Mem_Read(&hi2c1,
-                            FM24_ADDR << 1,
-                            addr,
-                            I2C_MEMADD_SIZE_16BIT,
-                            (uint8_t *)data,
-                            len,
-                            FM24_TIMEOUT_MS);
+    HAL_StatusTypeDef st = HAL_I2C_Mem_Read(&hi2c1,
+                                             FM24_ADDR << 1,
+                                             addr,
+                                             I2C_MEMADD_SIZE_16BIT,
+                                             (uint8_t *)data,
+                                             len,
+                                             FM24_TIMEOUT_MS);
+    if (st != HAL_OK)
+        fm24_recover_bus();
+    return st;
 }
 
 uint8_t fm24_ping(void)

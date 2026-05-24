@@ -227,7 +227,7 @@ Każda dekada ma przyciski `-`/`+` oraz pole spinbox (0–9). Łączna rezystanc
 ```
 ┌──────────────────────────────────┐
 │  DHCP:  [☑] Włączony             │
-│  IP:    [192.168.1.50          ] │
+│  IP:    [192.168.1.6           ] │
 │  Maska: [255.255.255.0         ] │
 │  Brama: [192.168.1.1           ] │
 │  Aktywny adres: 192.168.1.67    │
@@ -297,15 +297,47 @@ def run_auto_calibration(self):
 
 ## Raport PDF kalibracji
 
-Generowany przez `fpdf2`, zawiera:
+Generowany przez `fpdf2` w wątku tła (nie blokuje GUI). Uruchamiany przyciskiem **[PDF]** lub automatycznie po zakończeniu auto-kalibracji.
 
-- Datę i czas kalibracji
-- Numer seryjny RDE i model multimetru
-- Tabelę 6×10 z kolumnami: Nominalnie / Zmierzone / Błąd [ppm]
-- Podsumowanie: min/max/średni błąd per dekada
-- Podpis autoryzacji kalibracji
+**Nazwa pliku:** `RDE_cal_YYYYMMDD_HHMM.pdf`  
+Przykład: `RDE_cal_20260524_1445.pdf`
 
-Plik: `RDE_<serial>_cal_<YYYYMMDD>.pdf`
+Raport składa się z czterech części:
+
+**1. Nagłówek**
+
+| Pole | Opis |
+|------|------|
+| Data i czas | Timestamp kalibracji |
+| RDE IDN | Odpowiedź na `*IDN?` |
+| Meter IDN | Identyfikacja multimetru |
+| Tryb | `4W FRES` lub `2W RES`, NPLC, liczba uśrednień |
+
+**2. Tabela kalibracyjna [mΩ]**
+
+Siatka 6 dekad × 10 cyfr ze zmierzonymi wartościami w miliohmach. Komórki kolorowane wg odchyłki od wartości nominalnej:
+
+| Kolor | Odchyłka |
+|:-----:|----------|
+| Biały | ≤ 1% |
+| Żółty | 1–5% |
+| Czerwony | > 5% |
+
+**3. Tabela odchyłek od nominału**
+
+- Kolumna `d=0`: bezwzględna wartość zwarcia w mΩ (brak wartości nominalnej)
+- Kolumny `d=1..9`: odchyłka procentowa `|zmierzone - nominalne| / nominalne × 100%`
+- Ta sama kolorystyka co tabela kalibracyjna
+
+**4. Tabela podsumowująca**
+
+Dla każdej dekady i wiersz zbiorczy `ALL DECADES`:
+
+| Kolumna | Opis |
+|---------|------|
+| Zwarcie d=0 [mΩ] | Offset zwarciowy dekady |
+| Średnia odchyłka [%] | Średnia z cyfr 1–9 |
+| Maks. odchyłka [%] | Najgorsza cyfra w dekadzie |
 
 ---
 

@@ -64,7 +64,7 @@ RJ-45 ───│─ W5500 (SPI2)        SPI2 ─ W5500      │
     import pyvisa
 
     rm = pyvisa.ResourceManager('@py')
-    inst = rm.open_resource('TCPIP::192.168.1.50::INSTR')
+    inst = rm.open_resource('TCPIP::192.168.1.6::INSTR')
     inst.timeout = 5000
     print(inst.query('*IDN?'))
     # bartkepl,RDE,1.0,A3F7B201

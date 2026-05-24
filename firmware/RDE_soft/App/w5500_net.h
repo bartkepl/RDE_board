@@ -15,21 +15,6 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-/* ── PHY speed selection ──────────────────────────────────────────────────
- * Change W5500_PHY_MODE to diagnose RX signal quality issues.
- *
- *  W5500_PHY_AUTO     Auto-negotiation via PMODE pins (requires clean 100M RX)
- *  W5500_PHY_10M_HD   10 Mbps half-duplex  (works with degraded RX signal)
- *  W5500_PHY_100M_FD  100 Mbps full-duplex (requires good RX signal)
- *
- * Board v0.3: 100M fails (RX path attenuation). Use 10M until HW is fixed.
- * ───────────────────────────────────────────────────────────────────────── */
-#define W5500_PHY_AUTO     0
-#define W5500_PHY_10M_HD   1
-#define W5500_PHY_100M_FD  2
-
-#define W5500_PHY_MODE     W5500_PHY_10M_HD   /* ← change for HW debugging */
-
 void w5500_net_init(void);
 void w5500_net_task(void);
 void w5500_net_restart(void);   /* apply new net_config + restart state machine */

@@ -16,6 +16,7 @@ import abc
 import dataclasses
 import datetime
 import ipaddress
+import math
 import os
 import shutil
 import socket
@@ -59,7 +60,7 @@ COL_CMD  = "#888888"
 COL_INFO = "#3366cc"
 
 DECADE_LABELS   = ["100kΩ (d6)", "10kΩ (d5)", "1kΩ (d4)", "100Ω (d3)", "10Ω (d2)", "1Ω (d1)"]
-DECADE_UNITS_MO = [100_000_000, 10_000_000, 1_000_000, 100_000, 10_000, 1_000]
+DECADE_UNITS_MO = [1_000, 10_000, 100_000, 1_000_000, 10_000_000, 100_000_000]
 
 MUX_CARDS_OK   = {"34901A", "34902A"}
 MUX_CARDS_WARN = {"34908A"}
@@ -142,6 +143,46 @@ def parse_scpi_error(response: str) -> "tuple[int, str]":
         pass
     return 0, "No error"
 
+# ─── Shared VISA ResourceManager ─────────────────────────────────────────────
+# One RM per process; creating multiple RMs with some VISA backends (NI-VISA)
+# can invalidate existing sessions when a new RM is opened or closed.
+
+_visa_rm: Optional["pyvisa.ResourceManager"] = None
+
+def _get_visa_rm() -> "pyvisa.ResourceManager":
+    """Shared process-wide VISA RM.
+    Priority: NI-VISA (system default) → pyvisa-py (@py).
+    Keysight/Agilent IO Libraries are deliberately skipped."""
+    global _visa_rm
+    if _visa_rm is not None:
+        return _visa_rm
+
+    # 1. Try the system default — accept it only if it is NOT Keysight/Agilent
+    try:
+        rm = pyvisa.ResourceManager()
+        lib = str(getattr(rm.visalib, 'library_path', '')).lower()
+        if 'keysight' not in lib and 'agilent' not in lib:
+            _visa_rm = rm
+            return _visa_rm
+        try:
+            rm.close()
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # 2. Fall back to pure-Python backend (pyvisa-py)
+    try:
+        _visa_rm = pyvisa.ResourceManager('@py')
+        return _visa_rm
+    except Exception:
+        pass
+
+    # 3. Last resort — accept whatever is available (including Keysight)
+    _visa_rm = pyvisa.ResourceManager()
+    return _visa_rm
+
+
 # ─── Transport abstraction (extensible for future COM/RS485) ──────────────────
 
 class BaseTransport(abc.ABC):
@@ -167,27 +208,18 @@ class PyVisaTransport(BaseTransport):
         if not VISA_AVAILABLE:
             return ()
         try:
-            rm  = pyvisa.ResourceManager()
-            res = rm.list_resources()
-            rm.close()
-            return res
+            return _get_visa_rm().list_resources()
         except Exception:
             return ()
 
     def connect(self, address: str, timeout_ms: int = 5000) -> None:
-        self._rm   = pyvisa.ResourceManager()
-        self._inst = self._rm.open_resource(address)
+        self._inst = _get_visa_rm().open_resource(address)
         self._inst.timeout = timeout_ms
 
     def disconnect(self) -> None:
         try:
             if self._inst:
                 self._inst.close()
-        except Exception:
-            pass
-        try:
-            if self._rm:
-                self._rm.close()
         except Exception:
             pass
         self._inst = None
@@ -299,38 +331,18 @@ class MultimeterDevice:
     def configure(self) -> None:
         """Send configuration commands to multimeter."""
         t = self._transport
+        func = "FRES" if self.mode_4w else "RES"
         if self.model == "Agilent 34970A":
             ch = f"(@{self.slot}{self.channel:02d})"
-            func = "FRES" if self.mode_4w else "RES"
             t.write(f"CONF:{func} DEF,DEF,{ch}")
             t.write(f"SENS:{func}:NPLC {self.nplc},{ch}")
         else:
-            func = "FRES" if self.mode_4w else "RES"
-            t.write(f"CONF:{func} DEF,MIN")
-            nplc_cmd = "FRES:NPLC" if self.mode_4w else "RES:NPLC"
-            t.write(f"{nplc_cmd} {self.nplc}")
-            if METER_MODELS[self.model].get("digits"):
-                res_cmd = "FRES:RES" if self.mode_4w else "RES:RES"
-                # digits → resolution mapping (approximate)
-                # Just use MIN for now; proper mapping depends on range
-            if self.avg_count > 1:
-                avg_node = "FRES" if self.mode_4w else "RES"
-                t.write(f"{avg_node}:AVER:COUNT {self.avg_count}")
-                t.write(f"{avg_node}:AVER:STAT ON")
-            else:
-                avg_node = "FRES" if self.mode_4w else "RES"
-                try:
-                    t.write(f"{avg_node}:AVER:STAT OFF")
-                except Exception:
-                    pass
+            t.write(f"CONF:{func}")
+            t.write(f"SENS:{func}:NPLC {self.nplc}")
 
     def measure_once(self) -> float:
         """Trigger one measurement and return Ω."""
-        if self.model == "Agilent 34970A":
-            ch = f"(@{self.slot}{self.channel:02d})"
-            resp = self._transport.query("READ?")
-        else:
-            resp = self._transport.query("READ?")
+        resp = self._transport.query("READ?")
         return float(resp.strip().split(",")[0])
 
     def measure(self) -> float:
@@ -354,7 +366,7 @@ class AppState:
     decade_vals: List[int] = dataclasses.field(default_factory=lambda: [0]*6)
     # Cal table [decade_idx 0-5][digit 0-9] in milliohms
     cal_table:   List[List[int]] = dataclasses.field(
-        default_factory=lambda: [[d * u // 1000 for d in range(10)]
+        default_factory=lambda: [[d * u for d in range(10)]
                                  for u in DECADE_UNITS_MO])
     meter:       MultimeterDevice = dataclasses.field(default_factory=MultimeterDevice)
 
@@ -387,7 +399,7 @@ class _ScpiMixin:
             return True
         except Exception as exc:
             self._log_pane.log(f"ERROR: {exc}", "error")
-            messagebox.showerror("SCPI Error", str(exc))
+            self._root.after(0, lambda e=str(exc): messagebox.showerror("SCPI Error", e))
             return False
 
     def require_connection(self) -> bool:
@@ -536,14 +548,14 @@ class ConnectionTab(_BaseTab):
         ttk.Label(proto_f, text="Interface:").grid(row=0, column=0, **p)
         self._iface_var = tk.StringVar(value="VXI-11 / Ethernet")
         iface_cb = ttk.Combobox(
-            proto_f, textvariable=self._iface_var, width=22, state="readonly",
-            values=["VXI-11 / Ethernet", "USB-TMC",
-                    "COM / UART  (coming soon)", "COM / RS485 Modbus  (coming soon)"])
+            proto_f, textvariable=self._iface_var, width=26, state="readonly",
+            values=["VXI-11 / Ethernet", "VISA (USB/GPIB/ASRL/…)",
+                    "COM / RS485 Modbus  (coming soon)"])
         iface_cb.grid(row=0, column=1, **p)
         iface_cb.bind("<<ComboboxSelected>>", self._on_iface_change)
 
         ttk.Label(proto_f, text="Address:").grid(row=0, column=2, **p)
-        self._addr_var = tk.StringVar(value="TCPIP::192.168.1.50::INSTR")
+        self._addr_var = tk.StringVar(value="TCPIP::192.168.1.6::INSTR")
         self._addr_cb  = ttk.Combobox(proto_f, textvariable=self._addr_var, width=36)
         self._addr_cb.grid(row=0, column=3, **p)
 
@@ -579,18 +591,18 @@ class ConnectionTab(_BaseTab):
 
     def _on_iface_change(self, _=None) -> None:
         iface = self._iface_var.get()
-        if "USB-TMC" in iface:
-            self._addr_var.set("USB::0xCAFE::0x4000::INSTR")
-            self._btn_scan.config(state="disabled")
+        if "VISA" in iface:
+            self._addr_var.set("")
+            self._btn_scan.config(state="normal")
         elif "coming soon" in iface:
             self._addr_var.set("")
             self._btn_scan.config(state="disabled")
             messagebox.showinfo("Not yet implemented",
                                 "This transport is reserved for future use.")
             self._iface_var.set("VXI-11 / Ethernet")
-            self._addr_var.set("TCPIP::192.168.1.50::INSTR")
+            self._addr_var.set("TCPIP::192.168.1.6::INSTR")
         else:
-            self._addr_var.set("TCPIP::192.168.1.50::INSTR")
+            self._addr_var.set("TCPIP::192.168.1.6::INSTR")
             self._btn_scan.config(state="normal")
 
     def _start_scan(self) -> None:
@@ -598,8 +610,12 @@ class ConnectionTab(_BaseTab):
             self._scan_log.log("pyvisa not installed.", "error")
             return
         self._btn_scan.config(state="disabled")
-        self._scan_log.log("Scanning /24 subnet for VXI-11 instruments …", "info")
-        threading.Thread(target=self._scan_thread, daemon=True).start()
+        if "VISA" in self._iface_var.get():
+            self._scan_log.log("Enumerating VISA resources (USB, GPIB, ASRL, …) …", "info")
+            threading.Thread(target=self._scan_visa_thread, daemon=True).start()
+        else:
+            self._scan_log.log("Scanning /24 subnet for VXI-11 instruments …", "info")
+            threading.Thread(target=self._scan_thread, daemon=True).start()
 
     def _scan_thread(self) -> None:
         import concurrent.futures
@@ -633,12 +649,12 @@ class ConnectionTab(_BaseTab):
         for ip in candidates:
             addr = f"TCPIP::{ip}::INSTR"
             try:
-                rm   = pyvisa.ResourceManager()
-                inst = rm.open_resource(addr)
+                inst = _get_visa_rm().open_resource(addr)
                 inst.timeout = 1000
-                idn  = inst.query("*IDN?").strip()
-                inst.close()
-                rm.close()
+                try:
+                    idn = inst.query("*IDN?").strip()
+                finally:
+                    inst.close()
                 results.append((addr, idn))
                 self._scan_log.log(f"Found: {addr}  →  {idn}", "ok")
             except Exception:
@@ -649,6 +665,28 @@ class ConnectionTab(_BaseTab):
         else:
             addrs = [r[0] for r in results]
             self._root.after(0, lambda a=addrs: self._set_scan_results(a))
+        self._root.after(0, lambda: self._btn_scan.config(state="normal"))
+
+    def _scan_visa_thread(self) -> None:
+        # Prefer pyvisa-py backend (@py) — uses pyusb directly, no NI-VISA cache.
+        # Falls back to default backend (NI-VISA) if pyvisa-py is not installed.
+        addrs = []
+        backend_label = ""
+        try:
+            found = list(_get_visa_rm().list_resources())
+            # Filter TCPIP — those are handled by the VXI-11 tab
+            addrs = [r for r in found if not r.upper().startswith('TCPIP')]
+            backend_label = "VISA"
+        except Exception:
+            pass
+
+        if not addrs:
+            self._scan_log.log("No VISA resources found (USB/GPIB/ASRL).", "warn")
+        else:
+            self._scan_log.log(f"Backend: {backend_label} — {len(addrs)} resource(s):", "info")
+            for addr in addrs:
+                self._scan_log.log(f"  {addr}", "ok")
+        self._root.after(0, lambda a=addrs: self._set_scan_results(a))
         self._root.after(0, lambda: self._btn_scan.config(state="normal"))
 
     def _set_scan_results(self, addrs: list) -> None:
@@ -1101,7 +1139,7 @@ class NetworkTab(_BaseTab):
         cfg_f.pack(fill="x", padx=8, pady=(8, 4))
 
         fields = [
-            ("Static IP:",  "net_ip",   "192.168.1.50",    "NET:IPADdress"),
+            ("Static IP:",  "net_ip",   "192.168.1.6",    "NET:IPADdress"),
             ("Netmask:",    "net_mask",  "255.255.255.0",   "NET:SMASk"),
             ("Gateway:",    "net_gw",    "192.168.1.1",     "NET:GATEway"),
         ]
@@ -1131,17 +1169,30 @@ class NetworkTab(_BaseTab):
         b_dq.grid(row=3, column=3, **p)
         self._connected_widgets += [dhcp_cb, b_dq]
 
-        b_apply = ttk.Button(cfg_f, text="NET:APPLy  (save to flash + restart W5500)",
+        ttk.Label(cfg_f, text="PHY Speed:").grid(row=4, column=0, **p)
+        self._phy_var = tk.StringVar(value="10M")
+        phy_cb = ttk.Combobox(cfg_f, textvariable=self._phy_var,
+                              values=["AUTO", "10M", "100M"],
+                              state="readonly", width=8)
+        phy_cb.grid(row=4, column=1, sticky="w", **p)
+        b_phy_set = ttk.Button(cfg_f, text="Set",
+                               command=lambda: self._phy_set())
+        b_phy_set.grid(row=4, column=2, **p)
+        b_phy_q = ttk.Button(cfg_f, text="Query", command=self._phy_query)
+        b_phy_q.grid(row=4, column=3, **p)
+        self._connected_widgets += [phy_cb, b_phy_set, b_phy_q]
+
+        b_apply = ttk.Button(cfg_f, text="NET:APPLy  (save to NVM + restart W5500)",
                              command=self._net_apply)
-        b_apply.grid(row=4, column=0, columnspan=3, sticky="w", **p)
+        b_apply.grid(row=5, column=0, columnspan=3, sticky="w", **p)
         self._connected_widgets.append(b_apply)
 
-        ttk.Label(cfg_f, text="Active IP:").grid(row=4, column=3, **p)
+        ttk.Label(cfg_f, text="Active IP:").grid(row=5, column=3, **p)
         self._active_ip_var = tk.StringVar(value="—")
         ttk.Label(cfg_f, textvariable=self._active_ip_var,
-                  foreground=COL_INFO, width=18).grid(row=4, column=4, **p)
+                  foreground=COL_INFO, width=18).grid(row=5, column=4, **p)
         b_rd = ttk.Button(cfg_f, text="Read", command=self._read_active_ip)
-        b_rd.grid(row=4, column=5, **p)
+        b_rd.grid(row=5, column=5, **p)
         self._connected_widgets.append(b_rd)
 
     def _net_set(self, cmd: str, val: str) -> None:
@@ -1161,6 +1212,39 @@ class NetworkTab(_BaseTab):
         val = "ON" if self._dhcp_var.get() else "OFF"
         threading.Thread(target=lambda: self.safe_write(f"NET:DHCP {val}"),
                          daemon=True).start()
+
+    # PHY mode mapping: combobox label ↔ integer sent over SCPI
+    _PHY_LABEL_TO_INT = {"AUTO": 0, "10M": 1, "100M": 2}
+    _PHY_INT_TO_LABEL = {0: "AUTO", 1: "10M", 2: "100M"}
+
+    def _phy_set(self) -> None:
+        if not self.require_connection():
+            return
+        val = self._phy_var.get()
+        mode_int = self._PHY_LABEL_TO_INT.get(val)
+        if mode_int is None:
+            return
+        threading.Thread(target=lambda: self.safe_write(f"NET:PHY:MODE {mode_int}"),
+                         daemon=True).start()
+
+    def _phy_query(self) -> None:
+        if not self.require_connection():
+            return
+        def _do():
+            resp = self.safe_query("NET:PHY:MODE?")
+            if not resp:
+                return
+            s = resp.strip().strip('"').upper()
+            # Firmware returns "AUTO" / "10M" / "100M"; tolerate "0"/"1"/"2" too
+            if s in ("AUTO", "10M", "100M"):
+                label = s
+            elif s.isdigit():
+                label = self._PHY_INT_TO_LABEL.get(int(s))
+            else:
+                label = None
+            if label:
+                self._root.after(0, lambda v=label: self._phy_var.set(v))
+        threading.Thread(target=_do, daemon=True).start()
 
     def _net_apply(self) -> None:
         if not self.require_connection():
@@ -1220,8 +1304,9 @@ class MultimeterConfigWindow(tk.Toplevel):
         self._visa_var = tk.StringVar()
         self._visa_cb  = ttk.Combobox(conn_f, textvariable=self._visa_var, width=32)
         self._visa_cb.grid(row=1, column=1, **p)
-        ttk.Button(conn_f, text="Refresh",
-                   command=self._refresh_resources).grid(row=1, column=2, **p)
+        self._btn_refresh = ttk.Button(conn_f, text="Scan",
+                                       command=self._refresh_resources)
+        self._btn_refresh.grid(row=1, column=2, **p)
 
         b_conn = ttk.Button(conn_f, text="Connect",    command=self._connect_meter)
         b_disc = ttk.Button(conn_f, text="Disconnect", command=self._disconnect_meter)
@@ -1351,10 +1436,22 @@ class MultimeterConfigWindow(tk.Toplevel):
         self._digits_cb.config(state="readonly" if has_digits else "disabled")
 
     def _refresh_resources(self) -> None:
-        res = SCPIDevice.list_resources()
-        self._visa_cb["values"] = list(res)
-        if res and not self._visa_var.get():
-            self._visa_var.set(res[0])
+        self._btn_refresh.config(state="disabled", text="Scanning…")
+        self._visa_cb["values"] = []
+        threading.Thread(target=self._scan_resources_thread, daemon=True).start()
+
+    def _scan_resources_thread(self) -> None:
+        try:
+            found = list(_get_visa_rm().list_resources())
+            addrs = [r for r in found if not r.upper().startswith('TCPIP')]
+        except Exception:
+            addrs = []
+        def _done():
+            self._btn_refresh.config(state="normal", text="Scan")
+            self._visa_cb["values"] = addrs
+            if addrs and (not self._visa_var.get() or self._visa_var.get() not in addrs):
+                self._visa_var.set(addrs[0])
+        self._root_app.after(0, _done)
 
     def _connect_meter(self) -> None:
         addr = self._visa_var.get().strip()
@@ -1486,12 +1583,12 @@ class CalibrationTab(_BaseTab):
         b_qa.pack(side="left", padx=2)
         self._connected_widgets.append(b_qa)
 
-        b_sv = ttk.Button(ctrl_f, text="Save to FRAM",
+        b_sv = ttk.Button(ctrl_f, text="Save Cal",
                           command=self._cal_save)
         b_sv.pack(side="left", padx=2)
         self._connected_widgets.append(b_sv)
 
-        b_ld = ttk.Button(ctrl_f, text="Load from FRAM",
+        b_ld = ttk.Button(ctrl_f, text="Load Cal",
                           command=self._cal_load)
         b_ld.pack(side="left", padx=2)
         self._connected_widgets.append(b_ld)
@@ -1530,7 +1627,7 @@ class CalibrationTab(_BaseTab):
         decade_names = ["d1  1Ω", "d2  10Ω", "d3  100Ω",
                         "d4  1kΩ", "d5  10kΩ", "d6  100kΩ"]
         for row_idx, name in enumerate(decade_names):
-            nom = [str(d * DECADE_UNITS_MO[row_idx] // 1000) for d in range(10)]
+            nom = [str(d * DECADE_UNITS_MO[row_idx]) for d in range(10)]
             self._tv.insert("", "end", iid=str(row_idx), text=name, values=nom)
         self._tv.pack(side="left", fill="both", expand=True)
         vsb = ttk.Scrollbar(tv_f, orient="vertical", command=self._tv.yview)
@@ -1595,6 +1692,39 @@ class CalibrationTab(_BaseTab):
         self._prog_lbl = ttk.Label(auto_f, text="")
         self._prog_lbl.pack(side="left")
 
+        # ── Timing settings ──
+        timing_f = ttk.Frame(auto_f)
+        timing_f.pack(side="left", padx=12, pady=4)
+
+        self._settle_var   = tk.DoubleVar(value=2.0)
+        self._intermeas_var = tk.DoubleVar(value=0.5)
+
+        ttk.Label(timing_f, text="Settle (s):").grid(
+            row=0, column=0, padx=(0, 2), sticky="e")
+        sb_settle = ttk.Spinbox(
+            timing_f, from_=0.1, to=30.0, increment=0.1, width=5,
+            textvariable=self._settle_var, format="%.1f",
+            command=self._update_cal_estimate)
+        sb_settle.grid(row=0, column=1, padx=(0, 10))
+        sb_settle.bind("<FocusOut>", lambda _: self._update_cal_estimate())
+        sb_settle.bind("<Return>",   lambda _: self._update_cal_estimate())
+
+        ttk.Label(timing_f, text="Inter-meas (s):").grid(
+            row=0, column=2, padx=(0, 2), sticky="e")
+        sb_inter = ttk.Spinbox(
+            timing_f, from_=0.0, to=10.0, increment=0.1, width=5,
+            textvariable=self._intermeas_var, format="%.1f",
+            command=self._update_cal_estimate)
+        sb_inter.grid(row=0, column=3, padx=(0, 10))
+        sb_inter.bind("<FocusOut>", lambda _: self._update_cal_estimate())
+        sb_inter.bind("<Return>",   lambda _: self._update_cal_estimate())
+
+        ttk.Label(timing_f, text="Est. time:").grid(
+            row=0, column=4, padx=(0, 2), sticky="e")
+        self._est_lbl = ttk.Label(timing_f, text="—", foreground=COL_INFO,
+                                  width=10)
+        self._est_lbl.grid(row=0, column=5)
+
         # ── PDF Report ──
         pdf_f = ttk.Frame(self.frame)
         pdf_f.pack(fill="x", padx=8, pady=(2, 8))
@@ -1604,6 +1734,21 @@ class CalibrationTab(_BaseTab):
 
         self._cancel_event = threading.Event()
         self._cal_thread:  Optional[threading.Thread] = None
+        self._update_cal_estimate()
+
+    def _update_cal_estimate(self, *_) -> None:
+        try:
+            settle    = float(self._settle_var.get())
+            inter     = float(self._intermeas_var.get())
+            avg       = max(1, self._state.meter.avg_count)
+            nplc      = self._state.meter.nplc
+            meas_time = nplc / 50.0          # one reading at 50 Hz line
+            per_point = 0.5 + settle + avg * (meas_time + inter) + 0.5
+            total_s   = 6 * (6 * 0.1 + 0.5) + 60 * per_point
+            mins, secs = divmod(int(total_s), 60)
+            self._est_lbl.config(text=f"~{mins}m {secs:02d}s")
+        except Exception:
+            self._est_lbl.config(text="—")
 
     # ── RDE calibration commands ──
 
@@ -1632,8 +1777,22 @@ class CalibrationTab(_BaseTab):
     def _cal_save(self) -> None:
         if not self.require_connection():
             return
-        threading.Thread(target=lambda: self.safe_write("CALibration:SAVE"),
-                         daemon=True).start()
+        def _do():
+            if not self.safe_write("CALibration:SAVE"):
+                return
+            err_count = self.drain_scpi_errors(silent_if_empty=True)
+            if err_count == 0:
+                self._log_pane.log("Calibration saved to NVM.", "ok")
+            else:
+                self._log_pane.log(
+                    "Calibration save failed. Values remain in RDE RAM only. "
+                    "See System tab for NVM/I2C diagnostics.", "error")
+                self._root.after(0, lambda: messagebox.showerror(
+                    "Save Failed",
+                    "CALibration:SAVE failed.\n"
+                    "Values are in RDE RAM but NOT stored to NVM.\n\n"
+                    "Check System tab → NVM / I2C Diagnostics."))
+        threading.Thread(target=_do, daemon=True).start()
 
     def _cal_load(self) -> None:
         if not self.require_connection():
@@ -1648,7 +1807,7 @@ class CalibrationTab(_BaseTab):
             return
         if messagebox.askyesno("Reset calibration",
                                "Reset in-RAM calibration to nominal values?\n"
-                               "(Does NOT overwrite FRAM — use Save to persist.)"):
+                               "(Does NOT overwrite NVM — use Save Cal to persist.)"):
             threading.Thread(target=lambda: self.safe_write("CALibration:RESet"),
                              daemon=True).start()
 
@@ -1674,9 +1833,19 @@ class CalibrationTab(_BaseTab):
             return
         dec, dig, val = self._m_dec.get(), self._m_dig.get(), self._m_val.get()
         try:
-            int(val)
+            ival = int(val)
+            if ival < 0:
+                raise ValueError
         except ValueError:
-            messagebox.showerror("Bad value", "Value must be an integer (milliohms).")
+            messagebox.showerror("Bad value", "Value must be a non-negative integer (milliohms).")
+            return
+        try:
+            idec, idig = int(dec), int(dig)
+        except ValueError:
+            messagebox.showerror("Bad value", "Decade and digit must be integers.")
+            return
+        if not (1 <= idec <= 6) or not (0 <= idig <= 9):
+            messagebox.showerror("Bad value", "Decade must be 1–6 and digit 0–9.")
             return
         threading.Thread(target=lambda: self.safe_write(
             f"CALibration:DECade {dec},{dig},{val}"),
@@ -1699,6 +1868,7 @@ class CalibrationTab(_BaseTab):
                                      self._log_pane, self._root)
         self._root.wait_window(win)
         self._refresh_meter_status()
+        self._update_cal_estimate()
 
     def _refresh_meter_status(self) -> None:
         m = self._state.meter
@@ -1749,6 +1919,9 @@ class CalibrationTab(_BaseTab):
         self._log_pane.log("Calibration abort requested…", "warn")
 
     def _autocal_thread(self) -> None:
+        MAX_ERRORS  = 3
+        settle_s    = max(0.1, float(self._settle_var.get()))
+        intermeas_s = max(0.0, float(self._intermeas_var.get()))
         total  = 6 * 10
         done   = 0
         errors = 0
@@ -1759,27 +1932,66 @@ class CalibrationTab(_BaseTab):
         self.safe_write("OUTPut:STATe ON")
         time.sleep(0.2)
 
+        # configure meter once — settings don't change between points
+        try:
+            meter.configure()
+        except Exception as exc:
+            self._log_pane.log(f"Meter configure failed: {exc}", "error")
+            self._root.after(0, lambda: (
+                messagebox.showerror("Meter Error",
+                                     "Failed to configure multimeter.\n"
+                                     "Check connection and try again."),
+                self._btn_autocal.config(state="normal"),
+                self._btn_abort.config(state="disabled"),
+            ))
+            return
+
         for decade in range(1, 7):
+            # Zero all decades before starting each new decade's sweep
+            for d in range(1, 7):
+                self.safe_write(f"RESistance:DECade {d},0")
+            time.sleep(0.5)
+
             for digit in range(0, 10):
                 if self._cancel_event.is_set():
                     break
+                if errors >= MAX_ERRORS:
+                    self._log_pane.log(
+                        f"Stopping: {MAX_ERRORS} consecutive errors.", "error")
+                    self._cancel_event.set()
+                    break
 
+                time.sleep(0.5)
                 self.safe_write(f"RESistance:DECade {decade},{digit}")
-                time.sleep(0.35)
+                time.sleep(settle_s)
 
-                if digit == 0:
-                    milliohm = 0
-                else:
-                    try:
-                        val_ohm  = meter.measure()
-                        milliohm = round(val_ohm * 1000)
-                        self.safe_write(
-                            f"CALibration:DECade {decade},{digit},{milliohm}")
-                    except Exception as exc:
+                try:
+                    readings = []
+                    for i in range(max(1, meter.avg_count)):
+                        if i > 0:
+                            time.sleep(intermeas_s)
+                        readings.append(meter.measure_once())
+                    val_ohm = statistics.mean(readings)
+                    if not math.isfinite(val_ohm) or val_ohm < 0:
+                        raise ValueError(f"Invalid measurement: {val_ohm}")
+                    if val_ohm > 1.1e6:
+                        raise ValueError(
+                            f"Meter overload/overflow: {val_ohm:.3e} Ω")
+                    milliohm = round(val_ohm * 1000)
+                    errors = 0  # reset on success
+                    nominal_mo = digit * DECADE_UNITS_MO[decade - 1]
+                    if nominal_mo > 0 and abs(milliohm - nominal_mo) > 0.5 * nominal_mo:
                         self._log_pane.log(
-                            f"Measure ERROR d{decade}/dig{digit}: {exc}", "error")
-                        milliohm = -1
-                        errors  += 1
+                            f"WARN d{decade}/dig{digit}: {milliohm} mO deviates "
+                            f">50% from nominal {nominal_mo} mO", "warn")
+                    time.sleep(0.5)
+                    self.safe_write(
+                        f"CALibration:DECade {decade},{digit},{milliohm}")
+                except Exception as exc:
+                    self._log_pane.log(
+                        f"Measure ERROR d{decade}/dig{digit}: {exc}", "error")
+                    milliohm = -1
+                    errors  += 1
 
                 done += 1
                 pct = done * 100 // total
@@ -1799,13 +2011,21 @@ class CalibrationTab(_BaseTab):
             if self._cancel_event.is_set():
                 break
 
-        if not self._cancel_event.is_set():
-            self.safe_write("CALibration:SAVE")
-            self._log_pane.log(
-                f"Auto-calibration complete. {errors} error(s).",
-                "ok" if errors == 0 else "warn")
+        if self._cancel_event.is_set():
+            if errors >= MAX_ERRORS:
+                self._log_pane.log(
+                    f"Calibration stopped after {MAX_ERRORS} consecutive errors. "
+                    "Values measured so far are in RDE RAM — press 'Save Cal' to persist.",
+                    "warn")
+            else:
+                self._log_pane.log(
+                    "Auto-calibration aborted by user. NVM not updated.", "warn")
         else:
-            self._log_pane.log("Auto-calibration aborted.", "warn")
+            suffix = f"  ({errors} measurement error(s))" if errors else ""
+            self._log_pane.log(
+                f"Auto-calibration complete.{suffix} "
+                "Press 'Save Cal' to persist values.",
+                "ok" if errors == 0 else "warn")
 
         def _finish():
             self._btn_autocal.config(state="normal")
@@ -1837,17 +2057,17 @@ class CalibrationTab(_BaseTab):
             pdf = FPDF()
             pdf.add_page()
             pdf.set_font("Helvetica", "B", 16)
-            pdf.cell(0, 10, "RDE Calibration Report", ln=True, align="C")
+            pdf.cell(0, 10, "RDE Calibration Report", new_x="LMARGIN", new_y="NEXT", align="C")
             pdf.set_font("Helvetica", "", 10)
             pdf.ln(4)
 
             now = datetime.datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
             m   = self._state.meter
-            pdf.cell(0, 6, f"Date:      {now}", ln=True)
-            pdf.cell(0, 6, f"RDE IDN:   {self._state.rde_idn or '—'}", ln=True)
-            pdf.cell(0, 6, f"Meter IDN: {m.idn or '—'}", ln=True)
+            pdf.cell(0, 6, f"Date:      {now}", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 6, f"RDE IDN:   {self._state.rde_idn or 'N/A'}", new_x="LMARGIN", new_y="NEXT")
+            pdf.cell(0, 6, f"Meter IDN: {m.idn or 'N/A'}", new_x="LMARGIN", new_y="NEXT")
             mode_str = "4W (FRES)" if m.mode_4w else "2W (RES)"
-            pdf.cell(0, 6, f"Mode:      {mode_str},  NPLC={m.nplc},  Avg={m.avg_count}", ln=True)
+            pdf.cell(0, 6, f"Mode:      {mode_str},  NPLC={m.nplc},  Avg={m.avg_count}", new_x="LMARGIN", new_y="NEXT")
             pdf.ln(6)
 
             # Table header
@@ -1858,15 +2078,15 @@ class CalibrationTab(_BaseTab):
                 pdf.cell(col_w[i], 7, h, border=1, align="C")
             pdf.ln()
 
-            decade_names = ["1 Ω (d1)", "10 Ω (d2)", "100 Ω (d3)",
-                            "1 kΩ (d4)", "10 kΩ (d5)", "100 kΩ (d6)"]
+            decade_names = ["1 Ohm  (d1)", "10 Ohm (d2)", "100 Ohm(d3)",
+                            "1 kOhm (d4)", "10 kOhm(d5)", "100 kOhm(d6)"]
             pdf.set_font("Helvetica", "", 8)
 
             for row_idx, dname in enumerate(decade_names):
                 pdf.cell(col_w[0], 6, dname, border=1)
                 for dig in range(10):
                     mo  = self._state.cal_table[row_idx][dig]
-                    nom = dig * DECADE_UNITS_MO[row_idx] // 1000
+                    nom = dig * DECADE_UNITS_MO[row_idx]
                     pct = abs(mo - nom) / nom * 100 if nom > 0 else 0
                     if pct > 5:
                         pdf.set_fill_color(255, 180, 180)
@@ -1882,24 +2102,84 @@ class CalibrationTab(_BaseTab):
                         pdf.set_fill_color(255, 255, 255)
                 pdf.ln()
 
-            # Deviation summary
+            # ── Deviation table ──────────────────────────────────────────────
             pdf.ln(6)
             pdf.set_font("Helvetica", "B", 10)
-            pdf.cell(0, 6, "Deviation from Nominal:", ln=True)
-            pdf.set_font("Helvetica", "", 9)
+            pdf.cell(0, 6, "Deviation from Nominal:", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+
+            # Header row — d=0 shows short-circuit offset label
+            pdf.set_font("Helvetica", "B", 9)
+            pdf.cell(col_w[0], 7, "Decade", border=1, align="C")
+            pdf.cell(col_w[1], 7, "d=0 (mO)", border=1, align="C")
+            for dig in range(1, 10):
+                pdf.cell(col_w[dig + 1], 7, f"d={dig} %", border=1, align="C")
+            pdf.ln()
+
+            pdf.set_font("Helvetica", "", 8)
+            decade_devs = []   # mean % per decade for summary
             for row_idx, dname in enumerate(decade_names):
-                devs = []
-                for dig in range(1, 10):
+                pdf.cell(col_w[0], 6, dname, border=1)
+                devs_row = []
+                for dig in range(10):
                     mo  = self._state.cal_table[row_idx][dig]
-                    nom = dig * DECADE_UNITS_MO[row_idx] // 1000
-                    if nom > 0:
-                        devs.append(abs(mo - nom) / nom * 100)
-                if devs:
-                    mx = max(devs)
-                    mn = statistics.mean(devs)
-                    pdf.cell(0, 5,
-                             f"  {dname:12s}  max={mx:.2f}%   mean={mn:.2f}%",
-                             ln=True)
+                    nom = dig * DECADE_UNITS_MO[row_idx]
+                    if dig == 0:
+                        # short-circuit: show absolute mO offset
+                        cell_txt = str(mo)
+                        pct = 0.0
+                        fill = False
+                    else:
+                        pct = abs(mo - nom) / nom * 100 if nom > 0 else 0.0
+                        cell_txt = f"{pct:.2f}"
+                        devs_row.append(pct)
+                    if dig > 0:
+                        if pct > 5:
+                            pdf.set_fill_color(255, 180, 180); fill = True
+                        elif pct > 1:
+                            pdf.set_fill_color(255, 240, 160); fill = True
+                        else:
+                            fill = False
+                    pdf.cell(col_w[dig + 1], 6, cell_txt, border=1,
+                             align="C", fill=fill)
+                    if fill:
+                        pdf.set_fill_color(255, 255, 255)
+                pdf.ln()
+                decade_devs.append(devs_row)
+
+            # ── Summary table ─────────────────────────────────────────────────
+            pdf.ln(6)
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 6, "Summary:", new_x="LMARGIN", new_y="NEXT")
+            pdf.ln(2)
+
+            sw = [col_w[0] + col_w[1], 35, 35, 35]  # Decade | Short | Mean% | Max%
+            pdf.set_font("Helvetica", "B", 9)
+            for txt, w in zip(["Decade", "Short d=0 (mO)", "Mean dev %", "Max dev %"], sw):
+                pdf.cell(w, 7, txt, border=1, align="C")
+            pdf.ln()
+
+            pdf.set_font("Helvetica", "", 9)
+            all_devs = []
+            for row_idx, dname in enumerate(decade_names):
+                short_mo = self._state.cal_table[row_idx][0]
+                devs_row = decade_devs[row_idx]
+                mean_pct = statistics.mean(devs_row) if devs_row else 0.0
+                max_pct  = max(devs_row)             if devs_row else 0.0
+                all_devs.extend(devs_row)
+                for val, w in zip([dname, str(short_mo),
+                                   f"{mean_pct:.2f}", f"{max_pct:.2f}"], sw):
+                    pdf.cell(w, 6, val, border=1, align="C")
+                pdf.ln()
+
+            # Overall row
+            overall_mean = statistics.mean(all_devs) if all_devs else 0.0
+            overall_max  = max(all_devs)             if all_devs else 0.0
+            pdf.set_font("Helvetica", "B", 9)
+            for val, w in zip(["ALL DECADES", "-",
+                                f"{overall_mean:.2f}", f"{overall_max:.2f}"], sw):
+                pdf.cell(w, 6, val, border=1, align="C")
+            pdf.ln()
 
             pdf.output(path)
             self._root.after(0, lambda p=path: messagebox.showinfo(
@@ -1969,6 +2249,106 @@ class SystemTab(_BaseTab):
         self._err_lbl.grid(row=0, column=4, padx=10, sticky="w")
 
         self._connected_widgets += [b_en, b_da, b_ec, b_cl]
+
+        # ── NVM / I2C Diagnostics ──
+        nvm_f = ttk.LabelFrame(self.frame, text="NVM / I2C Diagnostics  (FM24C64B FRAM)")
+        nvm_f.pack(fill="x", padx=8, pady=4)
+
+        b_fp = ttk.Button(nvm_f, text="Test FRAM (PING+DIAG)", command=self._fram_test)
+        b_fp.grid(row=0, column=0, **p)
+        b_sc = ttk.Button(nvm_f, text="I2C Bus Scan", command=self._i2c_scan)
+        b_sc.grid(row=0, column=1, **p)
+        self._connected_widgets += [b_fp, b_sc]
+
+        ttk.Label(nvm_f,
+                  text="Switch NVM backend:  exclude relay_cal.c (flash) or relay_cal_flash.c (FRAM)  in .cproject",
+                  foreground=COL_INFO).grid(row=1, column=0, columnspan=3, sticky="w", padx=6, pady=2)
+
+    _I2C_ISR_BITS = [
+        (0,  "TXE"),   (1,  "TXIS"),  (2,  "RXNE"),  (3,  "ADDR"),
+        (4,  "NACKF"), (5,  "STOPF"), (6,  "TC"),     (7,  "TCR"),
+        (15, "BUSY"),  (16, "DIR"),
+    ]
+
+    def _decode_i2c_isr(self, isr: int) -> str:
+        flags = [name for bit, name in self._I2C_ISR_BITS if isr & (1 << bit)]
+        return ",".join(flags) if flags else "none"
+
+    def _fram_test(self) -> None:
+        if not self.require_connection():
+            return
+        def _do():
+            diag_str = None
+            try:
+                diag_str = self._device.query("SYSTem:FRAM:DIAG?").strip()
+            except Exception:
+                pass
+            if diag_str:
+                parts = diag_str.split(",")
+                ping  = parts[0].strip() == "1" if parts else False
+                isr   = int(parts[1].strip(), 16) if len(parts) > 1 else 0
+                state = int(parts[2].strip()) if len(parts) > 2 else 0
+                flags = self._decode_i2c_isr(isr)
+                self._log_pane.log(
+                    f"FRAM diag: ping={'OK' if ping else 'FAIL'}  "
+                    f"I2C ISR=0x{isr:08X} [{flags}]  HAL_state={state}",
+                    "ok" if ping else "error")
+                if not ping:
+                    busy  = bool(isr & (1 << 15))
+                    nackf = bool(isr & (1 << 4))
+                    if busy:
+                        hint = "I2C bus stuck BUSY — hardware reset or SDA/SCL glitch needed."
+                    elif nackf:
+                        hint = "NACK — chip not at 0x50. Check A0=A1=A2=GND."
+                    else:
+                        hint = "No response — check FRAM power, wiring, pull-ups."
+                    full = (f"FRAM NOT responding.\n"
+                            f"I2C ISR=0x{isr:08X} [{flags}]  HAL state={state}\n\n{hint}")
+                    self._root.after(0, lambda m=full: messagebox.showerror("FRAM Test", m))
+            else:
+                try:
+                    resp = self._device.query("SYSTem:FRAM:PING?").strip()
+                    ping = resp in ("1", "ON", "TRUE")
+                except Exception:
+                    ping = None
+                if ping is None:
+                    self._log_pane.log("FRAM ping: communication error.", "error")
+                elif ping:
+                    self._log_pane.log("FRAM ping: OK (1).", "ok")
+                else:
+                    self._log_pane.log("FRAM ping: FAIL (0).", "error")
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _i2c_scan(self) -> None:
+        if not self.require_connection():
+            return
+        def _do():
+            try:
+                result = self._device.query("SYSTem:I2C:SCAN?").strip()
+            except Exception as exc:
+                self._log_pane.log(f"I2C scan error: {exc}", "error")
+                return
+            if result == "NONE":
+                msg = "I2C scan: NO devices found (bus empty or wiring issue)."
+                self._log_pane.log(msg, "error")
+                self._root.after(0, lambda: messagebox.showwarning("I2C Scan", msg))
+            else:
+                notes = []
+                for tok in result.split(","):
+                    try:
+                        addr = int(tok.strip(), 16)
+                        if addr == 0x50:
+                            notes.append("0x50 = FM24C64B FRAM — OK")
+                        elif addr == 0x51:
+                            notes.append("0x51 = extra EEPROM (E0=VCC)")
+                        else:
+                            notes.append(f"0x{addr:02X} = unknown")
+                    except ValueError:
+                        pass
+                detail = "\n".join(notes)
+                self._log_pane.log(f"I2C scan: {result}", "ok")
+                self._root.after(0, lambda d=detail: messagebox.showinfo("I2C Scan", d))
+        threading.Thread(target=_do, daemon=True).start()
 
     def _read_next_error(self) -> None:
         """Read one error from the SCPI queue and display code + description."""

@@ -41,19 +41,15 @@ Adres       Rozmiar  Zawartość
 ──────────────────────────────────────────────────────────────
 0x0040     240 B     cal_data_t PRIMARY  [uint32_t milliohm[6][10]]
 0x0130       4 B     CRC32 cal_data PRIMARY
-0x0134       4 B     padding
-0x0138       8 B     cal_config_t PRIMARY  {magic, enabled, pad[3]}
-0x0140       4 B     CRC32 cal_config PRIMARY
-0x0144      12 B     padding
+0x0134       8 B     cal_config_t PRIMARY  {magic, enabled, pad[3]}
+0x013C       4 B     CRC32 cal_config PRIMARY
 ──────────────────────────────────────────────────────────────
-0x0150     240 B     cal_data_t BACKUP
-0x0240       4 B     CRC32 cal_data BACKUP
-0x0244       4 B     padding
-0x0248       8 B     cal_config_t BACKUP
-0x0250       4 B     CRC32 cal_config BACKUP
-0x0254      12 B     padding
+0x0140     240 B     cal_data_t BACKUP
+0x0230       4 B     CRC32 cal_data BACKUP
+0x0234       8 B     cal_config_t BACKUP
+0x023C       4 B     CRC32 cal_config BACKUP
 ──────────────────────────────────────────────────────────────
-0x0260    ~7840 B    WOLNE (do 0x1FFF)
+0x0240    ~7872 B    WOLNE (do 0x1FFF)
 ```
 
 ### Struktury danych
@@ -61,14 +57,17 @@ Adres       Rozmiar  Zawartość
 **`net_config_t`** (24 bajty):
 ```c
 typedef struct {
-    uint32_t magic;        // NET_MAGIC = 0xNETC0NFG
+    uint32_t magic;        // NET_CONFIG_MAGIC = 0xDE1AC0DF
     uint8_t  ip[4];        // Statyczne IP
-    uint8_t  mask[4];      // Maska podsieci
+    uint8_t  sn[4];        // Maska podsieci
     uint8_t  gw[4];        // Brama domyślna
-    uint8_t  dhcp;         // 0 = statyczne, 1 = DHCP
-    uint8_t  _pad[7];
-} net_config_t;
+    uint8_t  use_dhcp;     // 0 = statyczne, 1 = DHCP
+    uint8_t  phy_mode;     // 0=AUTO, 1=10M HD, 2=100M FD
+    uint8_t  _pad[6];
+} net_config_t;            // 24 bajty = 3 × DWORD
 ```
+
+Tryb PHY konfigurowany komendą `NET:PHY:MODE`; patrz [NET – konfiguracja sieci](../scpi/network.md).
 
 **`cal_data_t`** (240 bajtów):
 ```c
