@@ -8782,6 +8782,72 @@
 		)
 	)
 	(symbol
+		(lib_id "power:+3.3V")
+		(at 50.8 123.19 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "33cadef5-ab00-49d9-8f1a-546c293d48eb")
+		(property "Reference" "#PWR017"
+			(at 50.8 127 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "+3.3V"
+			(at 50.8 118.11 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 50.8 123.19 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 50.8 123.19 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"+3.3V\""
+			(at 50.8 123.19 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "47071097-01ca-41ae-986d-850456c336b8")
+		)
+		(instances
+			(project "RDE_board"
+				(path "/0c4edb77-9bdf-4103-be66-c5eb9940b163/8ab86091-8037-4e58-8522-0946e4707b6d"
+					(reference "#PWR017")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "power:Earth")
 		(at 246.38 128.27 0)
 		(mirror y)
@@ -12162,72 +12228,6 @@
 			(project "100x100_eurocard_testboard"
 				(path "/0c4edb77-9bdf-4103-be66-c5eb9940b163/8ab86091-8037-4e58-8522-0946e4707b6d"
 					(reference "C4")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:+5V")
-		(at 50.8 123.19 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "ee9efd6f-e6cb-4928-b94d-c851ae5e944d")
-		(property "Reference" "#PWR017"
-			(at 50.8 127 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "+5V"
-			(at 50.8 118.11 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 50.8 123.19 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 50.8 123.19 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 50.8 123.19 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "6af2bd62-a21b-4c28-9c93-bd48aa363d80")
-		)
-		(instances
-			(project "100x100_eurocard_testboard"
-				(path "/0c4edb77-9bdf-4103-be66-c5eb9940b163/8ab86091-8037-4e58-8522-0946e4707b6d"
-					(reference "#PWR017")
 					(unit 1)
 				)
 			)

@@ -1,0 +1,85 @@
+site_name: RDE Board
+site_description: Dokumentacja projektu RDE – Programowalna Dekada Rezystancyjna
+site_author: bartkepl
+docs_dir: docs
+site_dir: site
+
+theme:
+  name: material
+  language: pl
+  palette:
+    - scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Tryb ciemny
+    - scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Tryb jasny
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - tables
+  - attr_list
+  - md_in_html
+  - footnotes
+  - def_list
+  - toc:
+      permalink: true
+
+nav:
+  - Strona główna: index.md
+  - Pierwsze kroki: getting-started.md
+  - Sprzęt:
+    - Przegląd: hardware/index.md
+    - Macierz przekaźników: hardware/relay-matrix.md
+    - Ethernet – W5500: hardware/ethernet.md
+    - Pamięć – FRAM i Flash: hardware/memory.md
+  - Firmware:
+    - Architektura: firmware/index.md
+    - API przekaźników i kalibracji: firmware/relay-api.md
+    - API komunikacji: firmware/comms-api.md
+  - Komendy SCPI:
+    - Przegląd i składnia: scpi/index.md
+    - IEEE 488.2: scpi/ieee488.md
+    - RESistance & OUTPut: scpi/resistance.md
+    - RELay – surowy dostęp: scpi/relay.md
+    - CALibration: scpi/calibration.md
+    - NET – konfiguracja sieci: scpi/network.md
+    - SYSTem: scpi/system.md
+  - Procedura kalibracji: calibration.md
+  - Aplikacja rde_control.py: rde_control.md
+  - Status & TODO: todo.md
