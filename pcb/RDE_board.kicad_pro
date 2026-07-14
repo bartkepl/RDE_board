@@ -528,7 +528,7 @@
       "plot": "pcb",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": ".step",
+      "step": "../mechanical/RDE_board_model.step",
       "svg": "",
       "vrml": "../Media/RDE_board.wrl"
     },
